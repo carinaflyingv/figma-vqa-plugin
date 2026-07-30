@@ -8,6 +8,7 @@
     --surface: #e7ecf2; --alt: #f2f6fb; --brand: #5f3491; --flag: #ff006e;
   }
   * { box-sizing: border-box; }
+  html, body { overflow-x: hidden; }
   body {
     margin: 0; padding: 16px;
     font: 12px/1.5 Inter, -apple-system, system-ui, sans-serif;
@@ -69,17 +70,22 @@
     vertical-align: middle;
   }
   .info:hover { border-color: var(--brand); color: var(--brand); }
+  /* Pinned to the panel itself, not to the icon or its row. Anchoring to
+     anything inside the layout means the tooltip can always find an edge to run
+     off: beside a 14px icon it overflows sideways, below a row near the bottom it
+     overflows down. Fixed to the panel's own bounds, there is no edge left. */
   .info .tip {
-    display: none; position: absolute; left: 18px; top: -4px; z-index: 20;
-    width: 250px; padding: 10px 12px; border-radius: 8px;
-    background: var(--ink); color: #fff; font-size: 10.5px; font-weight: 400;
-    line-height: 1.45; text-align: left; letter-spacing: 0; cursor: default;
-    box-shadow: 0 6px 20px rgba(7,30,69,0.22);
+    display: none; position: fixed; left: 12px; right: 12px; bottom: 12px;
+    z-index: 50; padding: 12px 14px; border-radius: 10px;
+    background: var(--ink); color: #fff; font-size: 11px; font-weight: 400;
+    line-height: 1.55; text-align: left; letter-spacing: 0; cursor: default;
+    box-shadow: 0 10px 30px rgba(7,30,69,0.35); white-space: normal;
+    max-height: 70vh; overflow-y: auto;
   }
-  .info:hover .tip { display: block; }
+  .info:hover .tip, .info:focus .tip { display: block; }
   .info .tip b { color: #fff; }
-  .info.left .tip { left: auto; right: 18px; }
   .tip em { font-style: normal; color: #b9c6dd; }
+  .sub { position: relative; }
   canvas { display: none; }
 </style>
 </head>
@@ -115,15 +121,15 @@ numbers.</div>
 <button id="resize" class="ghost">Resize screenshot to logical points</button>
 
 <label class="opt">
-  <span>Threshold <b id="thVal">12</b><span class="info left">i<span class="tip">How different two pixels must be before they count as different. Summed across red, green and blue, so the scale is <b>0 to 765</b>. At 12 a pixel has to be off by about 4 per channel.<br><br><em>Lower</em> catches more, and picks up rendering noise. <em>Higher</em> only catches obvious differences and will miss a hardcoded hex, which is the whole point of the low delta signature.<br><br>Tune it with a control capture: run one you believe is correct, see what it reports, set the threshold just above that.</span></span></span>
+  <span>Threshold <b id="thVal">12</b><span class="info" tabindex="0">i<span class="tip">How different two pixels must be before they count as different. Summed across red, green and blue, so the scale is <b>0 to 765</b>. At 12 a pixel has to be off by about 4 per channel.<br><br><em>Lower</em> catches more, and picks up rendering noise. <em>Higher</em> only catches obvious differences and will miss a hardcoded hex, which is the whole point of the low delta signature.<br><br>Tune it with a control capture: run one you believe is correct, see what it reports, set the threshold just above that.</span></span></span>
   <input type="range" id="th" min="4" max="60" value="12">
 </label>
 <label class="opt">
-  <span>Cluster merge <b id="dlVal">2</b><span class="info left">i<span class="tip">How aggressively neighbouring differing pixels are grouped into one finding.<br><br><em>1</em> reports many small clusters, so a shifted label becomes forty glyph fragments. <em>2</em> merges them into readable regions. <em>3 to 4</em> start merging unrelated things, so a padding change and a label shift become one blob.<br><br>Leave it at 2 unless several geometry defects sit on the same element and you need them separated.</span></span></span>
+  <span>Cluster merge <b id="dlVal">2</b><span class="info" tabindex="0">i<span class="tip">How aggressively neighbouring differing pixels are grouped into one finding.<br><br><em>1</em> reports many small clusters, so a shifted label becomes forty glyph fragments. <em>2</em> merges them into readable regions. <em>3 to 4</em> start merging unrelated things, so a padding change and a label shift become one blob.<br><br>Leave it at 2 unless several geometry defects sit on the same element and you need them separated.</span></span></span>
   <input type="range" id="dl" min="1" max="4" value="2">
 </label>
 <label class="opt">
-  <span>Colour floor <b id="cfVal">0.10%</b><span class="info left">i<span class="tip">The smallest share of the element a colour must cover before the palette sweep reports on it.<br><br>At <b>0.10%</b> a 1pt divider registers. Below about 0.05% the antialiased blends along every edge start appearing as colours of their own, which is noise rather than signal.<br><br>Raise it if small details are creating chatter, lower it if something real is being missed.</span></span></span>
+  <span>Colour floor <b id="cfVal">0.10%</b><span class="info" tabindex="0">i<span class="tip">The smallest share of the element a colour must cover before the palette sweep reports on it.<br><br>At <b>0.10%</b> a 1pt divider registers. Below about 0.05% the antialiased blends along every edge start appearing as colours of their own, which is noise rather than signal.<br><br>Raise it if small details are creating chatter, lower it if something real is being missed.</span></span></span>
   <input type="range" id="cf" min="2" max="200" value="10">
 </label>
 
