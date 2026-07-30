@@ -4,10 +4,18 @@
   "api": "1.0.0",
   "main": "code.js",
   "ui": "ui.html",
-  "editorType": ["figma"],
+  "editorType": [
+    "figma",
+    "dev"
+  ],
   "documentAccess": "dynamic-page",
   "networkAccess": {
-    "allowedDomains": ["none"],
+    "allowedDomains": [
+      "none"
+    ],
     "reasoning": "All comparison happens locally in the plugin. No data leaves Figma."
-  }
+  },
+  "capabilities": [
+    "inspect"
+  ]
 }

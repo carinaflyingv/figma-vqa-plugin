@@ -282,6 +282,7 @@ async function run(data) {
   const spec = data.spec;
   const threshold = +$("th").value, dl = +$("dl").value;
   const parts = [];
+  if (data.dprNote) parts.push('<div class="note">' + data.dprNote + '</div>');
 
   // -- token layer, no image needed -----------------------------------------
   const tokenFindings = [];
@@ -484,8 +485,10 @@ async function run(data) {
     shotNodeId: data.shotNodeId,
     device: data.device,
     logicalShot: [data.shotPixels[0] / dpr, data.shotPixels[1] / dpr],
+    dprNote: data.dprNote,
     title: spec.name,
-    subtitle: all.length + " findings  \u00b7  " + data.device.name + " @" + dpr +
+    subtitle: all.length + " findings  \u00b7  " +
+              (data.device ? data.device.name : "derived") + " @" + dpr +
               "x  \u00b7  " + cs.length + " clusters, " + pct.toFixed(3) +
               "% changed  \u00b7  threshold " + threshold
   };
@@ -535,7 +538,8 @@ onmessage = async (e) => {
     const all = v.findings.concat(cset ? cset.findings : []);
     const out = [];
 
-    out.push('<div class="note">' + v.variableCount + ' variables across ' +
+    out.push('<div class="note">' + v.variableCount + ' variables (' +
+      (v.sourceNote || '') + ') across ' +
       v.collections.map(c => c.name + ' (' + c.modes.length + ' mode' +
       (c.modes.length === 1 ? '' : 's') + ')').join(', ') + '</div>');
     if (cset) {
@@ -544,7 +548,12 @@ onmessage = async (e) => {
       if (cset.sizeRows && cset.sizeRows.length) {
         out.push('<div class="note">padding by size: ' + cset.sizeRows
           .sort((a,b) => a.height - b.height)
-          .map(r => r.size + ' ' + r.values.join('/')).join('  \u00b7  ') + '</div>');
+          .map(r => r.size + ' ' + r.values.join('/') + ' [' + r.tokens.join(', ') + ']')
+          .join('  \u00b7  ') + '</div>');
+      }
+      if (cset.paddingFoundOn) {
+        out.push('<div class="note">padding read from the inner frame "' +
+                 cset.paddingFoundOn + '", not the variant itself</div>');
       }
     } else {
       out.push('<div class="note">No component set selected, so the size ramp ' +

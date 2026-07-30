@@ -124,15 +124,24 @@ async function collect() {
   const img = figma.getImageByHash(imageHashOf(shot));
   const size = await img.getSizeAsync();
   const device = matchDevice(size.width, size.height);
-  const dpr = device ? device.dpr : null;
-
-  if (!dpr) {
-    return { error: "Screenshot is " + size.width + " x " + size.height +
-             " px, which matches no known device. A crop rather than a full " +
-             "screen will always land here." };
-  }
-
   const spec = await readSpec(comp);
+
+  // Prefer the device table, since it also gives the logical size for the resize
+  // step. But a crop, a node export pasted back, or an unlisted device matches
+  // nothing, and refusing outright makes the tool unusable outside a full phone
+  // capture. So fall back to deriving the ratio from the pasted frame itself and
+  // snapping it to a real one. Approximate is fine here: the diff only needs the
+  // two images at the same density, not the true device ratio.
+  let dpr = device ? device.dpr : null;
+  let dprNote = null;
+  if (!dpr) {
+    const raw = size.width / Math.max(1, shot.width);
+    const candidates = [1, 1.5, 2, 2.625, 3, 3.5, 4];
+    dpr = candidates.reduce((a, b) =>
+      Math.abs(b - raw) < Math.abs(a - raw) ? b : a);
+    dprNote = size.width + " x " + size.height + " px matches no device. Derived " +
+              dpr + "x from the pasted frame (raw " + raw.toFixed(2) + ").";
+  }
   const shotBytes = await img.getBytesAsync();
   const canonBytes = await comp.exportAsync({
     format: "PNG", constraint: { type: "SCALE", value: dpr }
@@ -143,6 +152,7 @@ async function collect() {
     canonBytes: canonBytes,
     shotPixels: [size.width, size.height],
     device: device,
+    dprNote: dprNote,
     dpr: dpr,
     spec: spec,
     shotNodeId: shot.id,
@@ -178,7 +188,7 @@ async function annotate(payload) {
 
   // resize from device pixels to logical points, once
   const d = payload.device;
-  if (d && (Math.round(shot.width) !== d.lw || Math.round(shot.height) !== d.lh)) {
+  if (d && d.lw && (Math.round(shot.width) !== d.lw || Math.round(shot.height) !== d.lh)) {
     shot.resize(d.lw, d.lh);
     shot.name = d.name + "  \u00b7  " + d.lw + "x" + d.lh + "pt  @" + d.dpr + "x";
   }
@@ -315,14 +325,73 @@ function stripState(name) {
   return null;
 }
 
-async function auditVariables() {
-  const cols = await figma.variables.getLocalVariableCollectionsAsync();
-  const vars = await figma.variables.getLocalVariablesAsync();
+// Seed from whatever the selection actually binds, then follow aliases upward.
+// getLocalVariablesAsync only returns variables DEFINED in this file, so in a
+// real setup where the design kit consumes a published token library it returns
+// component behaviour toggles and none of the colour or spacing tokens. Walking
+// the alias graph from the components reaches the library ones, and has the
+// bonus of scoping the audit to tokens this component set actually uses.
+async function reachableVariables(seedNodes) {
+  const found = {}, queue = [];
+
+  function seedFrom(n) {
+    const bv = n.boundVariables || {};
+    for (const k of Object.keys(bv)) {
+      const entry = bv[k];
+      const list = Array.isArray(entry) ? entry : [entry];
+      for (const e of list) if (e && e.id) queue.push(e.id);
+    }
+    if ("children" in n) for (const c of n.children) seedFrom(c);
+  }
+  for (const n of seedNodes) seedFrom(n);
+
+  while (queue.length) {
+    const id = queue.pop();
+    if (found[id]) continue;
+    let v = null;
+    try { v = await figma.variables.getVariableByIdAsync(id); } catch (e) { v = null; }
+    if (!v) continue;
+    found[id] = v;
+    for (const modeId of Object.keys(v.valuesByMode)) {
+      const val = v.valuesByMode[modeId];
+      if (val && val.type === "VARIABLE_ALIAS" && !found[val.id]) queue.push(val.id);
+    }
+  }
+  return Object.keys(found).map(k => found[k]);
+}
+
+async function auditVariables(seedNodes) {
+  const localCols = await figma.variables.getLocalVariableCollectionsAsync();
+  const localVars = await figma.variables.getLocalVariablesAsync();
+
+  let vars = localVars;
+  let sourceNote = "local variables only";
+  if (seedNodes && seedNodes.length) {
+    const reached = await reachableVariables(seedNodes);
+    const seen = {};
+    vars = [];
+    for (const v of reached.concat(localVars)) {
+      if (!seen[v.id]) { seen[v.id] = true; vars.push(v); }
+    }
+    sourceNote = reached.length + " reached from the selection, " +
+                 localVars.length + " local";
+  }
+
   const byId = {};
   for (const v of vars) byId[v.id] = v;
 
+  // collections may be remote, so resolve them individually rather than
+  // assuming they appear in the local list
   const colById = {};
-  for (const c of cols) colById[c.id] = c;
+  for (const c of localCols) colById[c.id] = c;
+  for (const v of vars) {
+    if (colById[v.variableCollectionId]) continue;
+    try {
+      const c = await figma.variables.getVariableCollectionByIdAsync(v.variableCollectionId);
+      if (c) colById[c.id] = c;
+    } catch (e) { /* unreadable collection, skip */ }
+  }
+  const cols = Object.keys(colById).map(k => colById[k]);
 
   const hexOf = c => {
     const p = v => Math.round(v * 255).toString(16).padStart(2, "0");
@@ -449,7 +518,7 @@ async function auditVariables() {
     });
   }
 
-  return { findings: findings, variableCount: vars.length,
+  return { findings: findings, variableCount: vars.length, sourceNote: sourceNote,
            collections: cols.map(c => ({ name: c.name, modes: c.modes.map(m => m.name) })) };
 }
 
@@ -471,15 +540,37 @@ async function auditComponentSet(node) {
     const m = name.match(new RegExp(key + "=([^,]+)"));
     return m ? m[1].trim() : null;
   }
-  function boundName(n, key) {
+  // Padding often lives on an inner auto layout frame rather than on the variant
+  // itself. Reading only the top node reports 0 and the ramp check finds nothing.
+  function layoutHost(n) {
+    if (n.layoutMode && n.layoutMode !== "NONE" &&
+        (n.paddingLeft > 0 || n.paddingRight > 0)) return n;
+    if ("children" in n) {
+      for (const c of n.children) {
+        const h = layoutHost(c);
+        if (h) return h;
+      }
+    }
+    return n;
+  }
+  async function boundName(n, key) {
     const bv = n.boundVariables || {};
-    return bv[key] ? (byId[bv[key].id] ? byId[bv[key].id].name : "?") : null;
+    if (!bv[key]) return null;
+    if (byId[bv[key].id]) return byId[bv[key].id].name;
+    try {
+      const v = await figma.variables.getVariableByIdAsync(bv[key].id);
+      return v ? v.name : "?";
+    } catch (e) { return "?"; }
   }
 
   // group by the Size property, or by height when there is no Size axis
+  const hosts = {};
+  for (const v of variants) hosts[v.id] = layoutHost(v);
+
   const bySize = {};
   for (const v of variants) {
-    const size = prop(v.name, "Size") || ("h" + Math.round(v.height));
+    const size = prop(v.name, "Size") || prop(v.name, "Prominence") ||
+                 ("h" + Math.round(v.height));
     if (!bySize[size]) bySize[size] = [];
     bySize[size].push(v);
   }
@@ -489,9 +580,10 @@ async function auditComponentSet(node) {
     const g = bySize[size];
     const tokens = {}, values = {};
     for (const v of g) {
-      const t = boundName(v, "paddingLeft") || "(unbound)";
+      const host = hosts[v.id];
+      const t = (await boundName(host, "paddingLeft")) || "(unbound)";
       tokens[t] = (tokens[t] || 0) + 1;
-      values[Math.round(v.paddingLeft)] = (values[Math.round(v.paddingLeft)] || 0) + 1;
+      values[Math.round(host.paddingLeft)] = (values[Math.round(host.paddingLeft)] || 0) + 1;
     }
     const distinct = Object.keys(tokens);
     sizeRows.push({ size: size, count: g.length, height: g[0].height,
@@ -499,7 +591,11 @@ async function auditComponentSet(node) {
 
     if (distinct.length > 1) {
       const sorted = distinct.sort((a, b) => tokens[b] - tokens[a]);
-      const odd = g.filter(v => (boundName(v, "paddingLeft") || "(unbound)") !== sorted[0]);
+      const odd = [];
+      for (const v of g) {
+        const t = (await boundName(hosts[v.id], "paddingLeft")) || "(unbound)";
+        if (t !== sorted[0]) odd.push(v);
+      }
       findings.push({
         rule: "padding inconsistent within a size", severity: "major",
         title: "Size " + size + ": " + distinct.join(" and "),
@@ -532,10 +628,12 @@ async function auditComponentSet(node) {
   }
 
   const unbound = variants.filter(v => {
-    const bv = v.boundVariables || {};
-    return (v.paddingLeft > 0 && !bv.paddingLeft)
-        || (v.itemSpacing > 0 && !bv.itemSpacing)
-        || (typeof v.cornerRadius === "number" && v.cornerRadius > 0 && !bv.topLeftRadius);
+    const h = hosts[v.id];
+    const bv = h.boundVariables || {};
+    const rv = v.boundVariables || {};
+    return (h.paddingLeft > 0 && !bv.paddingLeft)
+        || (h.itemSpacing > 0 && !bv.itemSpacing)
+        || (typeof v.cornerRadius === "number" && v.cornerRadius > 0 && !rv.topLeftRadius);
   });
   if (unbound.length) {
     findings.push({
@@ -548,7 +646,8 @@ async function auditComponentSet(node) {
     });
   }
 
-  return { findings: findings, variantCount: variants.length, sizeRows: sizeRows };
+  return { findings: findings, variantCount: variants.length, sizeRows: sizeRows,
+           paddingFoundOn: paddingFoundOn };
 }
 
 // ---------------------------------------------------------------- messaging
@@ -558,13 +657,16 @@ figma.ui.onmessage = async (msg) => {
       const data = await collect();
       figma.ui.postMessage(Object.assign({ type: "collected" }, data));
     } else if (msg.type === "audit") {
-      const res = await auditVariables();
-      let setRes = null;
       const sel = figma.currentPage.selection;
       const cs = sel.find(n => n.type === "COMPONENT_SET" || n.type === "COMPONENT");
+      let root = null;
       if (cs) {
-        const root = cs.type === "COMPONENT" && cs.parent &&
-                     cs.parent.type === "COMPONENT_SET" ? cs.parent : cs;
+        root = cs.type === "COMPONENT" && cs.parent &&
+               cs.parent.type === "COMPONENT_SET" ? cs.parent : cs;
+      }
+      const res = await auditVariables(root ? [root] : sel);
+      let setRes = null;
+      if (root) {
         setRes = await auditComponentSet(root);
         setRes.name = root.name;
       }
