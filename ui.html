@@ -598,6 +598,32 @@ async function run(data) {
     return;
   }
 
+  // ---- measure the label before any rule runs -------------------------------
+  // Several checks below depend on this, so it has to exist first. inCanon is
+  // measured on B, the bare export. CAN is B padded by M on all sides, so the
+  // element sits M further along both axes.
+  const canonBox = [inCanon[0] + M, inCanon[1] + M, inCanon[2] + M, inCanon[3] + M];
+  const canonC = contentBounds(CAN, canonBox, rgb, dpr, 90);
+  const shotC = contentBounds(A, inShot, rgb, dpr, 90);
+
+  // A hug width component sized to its text cannot be compared by width if the
+  // two labels are not the same string. Say so once, loudly, rather than emitting
+  // a padding finding, a size finding and a handful of antialiasing colours that
+  // all trace back to the same cause.
+  let labelMismatch = false;
+  if (canonC && shotC) {
+    const relW = Math.abs(shotC.w - canonC.w) / Math.max(1, canonC.w);
+    if (relW > 0.15) {
+      labelMismatch = true;
+      parts.push('<div class="bad">The canonical label is ' + canonC.w.toFixed(1) +
+        ' pt wide and the capture\'s is ' + shotC.w.toFixed(1) + ' pt, ' +
+        (relW*100).toFixed(0) + '% apart. That almost always means the two are not ' +
+        'showing the same text. On a hug width component every width based ' +
+        'comparison below is then meaningless. Select the variant whose label ' +
+        'matches the screenshot, or set the canonical\'s text to match.</div>');
+    }
+  }
+
   // -- clusters into findings ------------------------------------------------
   // Cluster coordinates are relative to the compared frame. Findings need them in
   // logical points relative to the whole screenshot, so the annotator can place
@@ -715,13 +741,7 @@ async function run(data) {
     });
   }
 
-  // ---- measure the label directly, rather than inferring from clusters -----
-  // inCanon is measured on B, the bare export. CAN is B padded by M on all sides,
-  // so the element sits M further along both axes.
-  const canonBox = [inCanon[0] + M, inCanon[1] + M, inCanon[2] + M, inCanon[3] + M];
-  const canonC = contentBounds(CAN, canonBox, rgb, dpr, 90);
-  const shotC = contentBounds(A, inShot, rgb, dpr, 90);
-
+  // ---- findings derived from the label measurement -------------------------
   if (canonC && shotC) {
     const ddx = Math.round((shotC.dx - canonC.dx) * 10) / 10;
     const ddy = Math.round((shotC.dy - canonC.dy) * 10) / 10;
@@ -772,24 +792,6 @@ async function run(data) {
   // ---- full palette sweep --------------------------------------------------
   const pageBgI = ((Math.max(0, inShot[1] - Math.round(6*dpr))) * A.width + inShot[0]) * 4;
   const pageBg = [A.data[pageBgI], A.data[pageBgI+1], A.data[pageBgI+2]];
-  // A hug width component sized to its text cannot be compared by width if the
-  // two labels are not the same string. Say so once, loudly, rather than emitting
-  // a padding finding, a size finding and a handful of antialiasing colours that
-  // all trace back to the same cause.
-  let labelMismatch = false;
-  if (canonC && shotC) {
-    const rel = Math.abs(shotC.w - canonC.w) / Math.max(1, canonC.w);
-    if (rel > 0.15) {
-      labelMismatch = true;
-      parts.push('<div class="bad">The canonical label is ' + canonC.w.toFixed(1) +
-        ' pt wide and the capture\'s is ' + shotC.w.toFixed(1) + ' pt. That is ' +
-        (rel*100).toFixed(0) + '% apart, which almost always means the two are not ' +
-        'showing the same text. On a hug width component every width based ' +
-        'comparison below is then meaningless. Select the variant whose label ' +
-        'matches the screenshot, or set the canonical\'s text to match.</div>');
-    }
-  }
-
   const floor = (+$("cf").value) / 10000;
   const canonPal = palette(CAN, canonBox, pageBg, dpr, floor);
   const shotPal = palette(A, inShot, pageBg, dpr, floor);
