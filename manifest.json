@@ -1,0 +1,13 @@
+{
+  "name": "Prisme VQA",
+  "id": "prisme-vqa-local",
+  "api": "1.0.0",
+  "main": "code.js",
+  "ui": "ui.html",
+  "editorType": ["figma"],
+  "documentAccess": "dynamic-page",
+  "networkAccess": {
+    "allowedDomains": ["none"],
+    "reasoning": "All comparison happens locally in the plugin. No data leaves Figma."
+  }
+}

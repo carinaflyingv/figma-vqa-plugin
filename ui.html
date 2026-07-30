@@ -1,0 +1,575 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  :root {
+    --ink: #071e45; --soft: #3d5a87; --rule: #c6d0e3;
+    --surface: #e7ecf2; --alt: #f2f6fb; --brand: #5f3491; --flag: #ff006e;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 16px;
+    font: 12px/1.5 Inter, -apple-system, system-ui, sans-serif;
+    color: var(--ink); background: #fff;
+  }
+  h1 { font-size: 14px; margin: 0 0 2px; letter-spacing: -0.01em; }
+  .sub { color: var(--soft); font-size: 11px; margin-bottom: 14px; }
+  .row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+  .slot {
+    flex: 1; padding: 8px 10px; border: 1px solid var(--rule);
+    border-radius: 8px; background: var(--alt); font-size: 11px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .slot.empty { color: var(--soft); font-style: italic; }
+  .slot b { font-weight: 600; }
+  label.opt { display: flex; justify-content: space-between; align-items: center;
+              font-size: 11px; color: var(--soft); margin: 6px 0; }
+  input[type=range] { width: 160px; }
+  button {
+    width: 100%; padding: 11px; border: 0; border-radius: 9px;
+    background: var(--brand); color: #fff; font-size: 13px; font-weight: 600;
+    cursor: pointer; margin-top: 10px;
+  }
+  button:disabled { background: var(--rule); color: var(--soft); cursor: default; }
+  button.ghost { background: #fff; color: var(--brand); border: 1px solid var(--brand); }
+  #log { margin-top: 14px; font-size: 11px; }
+  .note { color: var(--soft); margin-bottom: 4px; }
+  .bad { color: var(--flag); font-weight: 600; }
+  .card {
+    border: 1px solid var(--rule); border-radius: 9px; padding: 10px 12px;
+    margin-bottom: 8px;
+  }
+  .card .h { font-weight: 600; font-size: 12px; }
+  .card .m { color: var(--soft); font-size: 10px; text-transform: uppercase;
+             letter-spacing: 0.04em; margin: 2px 0 6px; }
+  .kv { display: flex; gap: 8px; font-size: 11px; }
+  .kv span:first-child { color: var(--soft); width: 62px; flex: none; }
+  .kv.obs span:last-child { color: var(--flag); font-weight: 600; }
+  .ev { color: var(--soft); font-size: 10px; margin-top: 5px; }
+  hr { border: 0; border-top: 1px solid var(--rule); margin: 14px 0; }
+  .tabs { display: flex; gap: 4px; margin: 10px 0 12px;
+          background: var(--surface); padding: 3px; border-radius: 9px; }
+  .tab { flex: 1; text-align: center; padding: 6px; border-radius: 7px;
+         font-size: 11px; font-weight: 600; color: var(--soft); cursor: pointer; }
+  .tab.on { background: #fff; color: var(--ink); }
+  .card.major { border-left: 3px solid var(--flag); }
+  .card.minor { border-left: 3px solid #d99b00; }
+  .card.info  { border-left: 3px solid var(--rule); }
+  .rule { font-size: 9px; text-transform: uppercase; letter-spacing: 0.06em;
+          color: var(--soft); margin-bottom: 3px; }
+  .fix { font-size: 10px; color: var(--brand); margin-top: 6px; }
+  .clean { text-align: center; padding: 24px 12px; color: var(--soft); }
+  .clean b { display: block; font-size: 22px; color: var(--brand); margin-bottom: 4px; }
+  canvas { display: none; }
+</style>
+</head>
+<body>
+
+<h1>Prisme VQA</h1>
+<div class="tabs">
+  <div class="tab on" data-p="compare">Compare</div>
+  <div class="tab" data-p="tokens">Tokens</div>
+</div>
+
+<div id="pane-compare">
+<div class="sub">Select a pasted screenshot and the component variant it should match.</div>
+
+<div class="row"><div class="slot empty" id="slotShot">no screenshot selected</div></div>
+<div class="row"><div class="slot empty" id="slotComp">no component selected</div></div>
+
+<label class="opt">
+  <span>Threshold <b id="thVal">12</b></span>
+  <input type="range" id="th" min="4" max="60" value="12">
+</label>
+<label class="opt">
+  <span>Cluster merge <b id="dlVal">2</b></span>
+  <input type="range" id="dl" min="1" max="4" value="2">
+</label>
+
+<button id="run" disabled>Compare</button>
+<button id="draw" class="ghost" style="display:none">Annotate in Figma</button>
+<div id="log"></div>
+</div>
+
+<div id="pane-tokens" style="display:none">
+  <div class="sub">Audits the variable graph. No screenshot needed. Select a
+  component set as well to check its size ramp.</div>
+  <button id="audit">Run audit</button>
+  <div id="alog"></div>
+</div>
+<canvas id="cA"></canvas>
+<canvas id="cB"></canvas>
+
+<script>
+const $ = id => document.getElementById(id);
+let lastPayload = null;
+
+$("th").oninput = e => $("thVal").textContent = e.target.value;
+$("dl").oninput = e => $("dlVal").textContent = e.target.value;
+
+function log(html) { $("log").innerHTML = html; }
+
+// ------------------------------------------------------------------ decoding
+async function decode(bytes) {
+  const blob = new Blob([new Uint8Array(bytes)], { type: "image/png" });
+  const url = URL.createObjectURL(blob);
+  const img = await new Promise((res, rej) => {
+    const i = new Image();
+    i.onload = () => res(i);
+    i.onerror = () => rej(new Error("could not decode PNG"));
+    i.src = url;
+  });
+  URL.revokeObjectURL(url);
+  return img;
+}
+
+function toData(img, canvas) {
+  canvas.width = img.width; canvas.height = img.height;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  ctx.clearRect(0, 0, img.width, img.height);
+  ctx.drawImage(img, 0, 0);
+  return ctx.getImageData(0, 0, img.width, img.height);
+}
+
+// Composite onto white. A Figma node export is transparent outside its corner
+// radius, and leaving that as zeroed RGB makes the corners read as black, which
+// then reports as four large false findings on every run.
+function flatten(d, bg) {
+  const o = new Uint8ClampedArray(d.data.length);
+  for (let i = 0; i < d.data.length; i += 4) {
+    const a = d.data[i + 3] / 255;
+    o[i]     = d.data[i]     * a + bg[0] * (1 - a);
+    o[i + 1] = d.data[i + 1] * a + bg[1] * (1 - a);
+    o[i + 2] = d.data[i + 2] * a + bg[2] * (1 - a);
+    o[i + 3] = 255;
+  }
+  return { data: o, width: d.width, height: d.height };
+}
+
+// Grow the canonical onto a larger field of the capture's background colour, so a
+// element that changed size has room to differ rather than being cropped away.
+function padded(d, m, bg) {
+  const w = d.width + m * 2, h = d.height + m * 2;
+  const out = new Uint8ClampedArray(w * h * 4);
+  for (let i = 0; i < w * h; i++) {
+    out[i*4] = bg[0]; out[i*4+1] = bg[1]; out[i*4+2] = bg[2]; out[i*4+3] = 255;
+  }
+  for (let y = 0; y < d.height; y++) {
+    for (let x = 0; x < d.width; x++) {
+      const si = (y * d.width + x) * 4, di = ((y + m) * w + (x + m)) * 4;
+      out[di] = d.data[si]; out[di+1] = d.data[si+1];
+      out[di+2] = d.data[si+2]; out[di+3] = 255;
+    }
+  }
+  return { data: out, width: w, height: h };
+}
+
+function hexRgb(h) {
+  h = h.replace("#", "");
+  return [parseInt(h.slice(0,2),16), parseInt(h.slice(2,4),16), parseInt(h.slice(4,6),16)];
+}
+
+// ------------------------------------------------------------------ locating
+// Find the component inside the screenshot by its fill colour. This is what makes
+// the plugin work without asking the user to draw a crop box, and it doubles as
+// the identity check: if the thing found is a different size to the canonical,
+// these are not the same component and no finding below can be trusted.
+function locate(d, rgb, tol) {
+  let x0 = 1e9, y0 = 1e9, x1 = -1, y1 = -1;
+  for (let y = 0; y < d.height; y++) {
+    for (let x = 0; x < d.width; x++) {
+      const i = (y * d.width + x) * 4;
+      const s = Math.abs(d.data[i]-rgb[0]) + Math.abs(d.data[i+1]-rgb[1]) + Math.abs(d.data[i+2]-rgb[2]);
+      if (s < tol) {
+        if (x < x0) x0 = x; if (x > x1) x1 = x;
+        if (y < y0) y0 = y; if (y > y1) y1 = y;
+      }
+    }
+  }
+  return x1 < 0 ? null : [x0, y0, x1 + 1, y1 + 1];
+}
+
+// ------------------------------------------------------------------ diff
+function diff(A, B, ox, oy, w, h, threshold) {
+  const mask = new Uint8Array(w * h);
+  const delta = new Int32Array(w * h);
+  let changed = 0;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const ia = ((y + oy) * A.width + (x + ox)) * 4;
+      const ib = (y * B.width + x) * 4;
+      const s = Math.abs(A.data[ia]-B.data[ib])
+              + Math.abs(A.data[ia+1]-B.data[ib+1])
+              + Math.abs(A.data[ia+2]-B.data[ib+2]);
+      const k = y * w + x;
+      delta[k] = s;
+      if (s > threshold) { mask[k] = 1; changed++; }
+    }
+  }
+  return { mask, delta, w, h, changed };
+}
+
+function dilate(mask, w, h, n) {
+  let cur = mask;
+  for (let pass = 0; pass < n; pass++) {
+    const out = new Uint8Array(w * h);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        if (!cur[y * w + x]) continue;
+        for (let dy = -1; dy <= 1; dy++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            const nx = x + dx, ny = y + dy;
+            if (nx >= 0 && ny >= 0 && nx < w && ny < h) out[ny * w + nx] = 1;
+          }
+        }
+      }
+    }
+    cur = out;
+  }
+  return cur;
+}
+
+// iterative flood fill, because a recursive one blows the stack on a big region
+function cluster(mask, grown, w, h, minArea, delta) {
+  const seen = new Uint8Array(w * h);
+  const out = [];
+  const stack = new Int32Array(w * h);
+  for (let s = 0; s < w * h; s++) {
+    if (!grown[s] || seen[s]) continue;
+    let sp = 0; stack[sp++] = s; seen[s] = 1;
+    let x0 = 1e9, y0 = 1e9, x1 = -1, y1 = -1, area = 0, members = 0, dsum = 0;
+    while (sp > 0) {
+      const k = stack[--sp];
+      const x = k % w, y = (k / w) | 0;
+      members++;
+      if (mask[k]) { area++; dsum += delta[k]; }
+      if (x < x0) x0 = x; if (x > x1) x1 = x;
+      if (y < y0) y0 = y; if (y > y1) y1 = y;
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          const nx = x + dx, ny = y + dy;
+          if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+          const nk = ny * w + nx;
+          if (grown[nk] && !seen[nk]) { seen[nk] = 1; stack[sp++] = nk; }
+        }
+      }
+    }
+    if (area < minArea) continue;
+    out.push({
+      bbox: [x0, y0, x1, y1], area: area,
+      fill: Math.round(area / Math.max(1, members) * 1000) / 1000,
+      meanDelta: Math.round(dsum / Math.max(1, area) * 10) / 10
+    });
+  }
+  return out.sort((a, b) => b.area - a.area);
+}
+
+function shapeOf(c, dpr) {
+  const w = (c.bbox[2] - c.bbox[0] + 1) / dpr, h = (c.bbox[3] - c.bbox[1] + 1) / dpr;
+  const ar = w / Math.max(0.001, h);
+  if (w <= 14 && h <= 14) return "corner_or_small_detail";
+  if (c.fill > 0.6 && w > 20 && h > 20) return "area_fill";
+  if (ar > 4 && h <= 6) return "horizontal_edge";
+  if (ar < 0.25 && w <= 6) return "vertical_edge";
+  if (c.fill < 0.35) return "glyph_or_text";
+  return "region";
+}
+
+// ------------------------------------------------------------------ run
+async function run(data) {
+  const dpr = data.dpr;
+  const spec = data.spec;
+  const threshold = +$("th").value, dl = +$("dl").value;
+  const parts = [];
+
+  // -- token layer, no image needed -----------------------------------------
+  const tokenFindings = [];
+  if (spec.unbound.length) {
+    tokenFindings.push({
+      id: "unbound_values", property: spec.unbound.join(", "),
+      layer: "token", severity: "major",
+      spec: "bound to a Prisme variable",
+      observed: "raw value, no binding",
+      evidence: "read from boundVariables on " + spec.name,
+      bbox: null
+    });
+  }
+
+  if (!spec.fill) {
+    log('<div class="bad">The component has no solid fill, so it cannot be located ' +
+        'in the screenshot. Pick a variant with a fill.</div>');
+    return;
+  }
+
+  const shotImg = await decode(data.shotBytes);
+  const canonImg = await decode(data.canonBytes);
+  const A = toData(shotImg, $("cA"));
+  const Braw = toData(canonImg, $("cB"));
+  const B = flatten(Braw, [255, 255, 255]);
+
+  const rgb = hexRgb(spec.fill);
+  const inShot = locate(A, rgb, 60);
+  const inCanon = locate(B, rgb, 60);
+
+  if (!inShot || !inCanon) {
+    log('<div class="bad">Fill ' + spec.fill + ' not found in the ' +
+        (!inShot ? "screenshot" : "canonical export") +
+        '. Either this is the wrong variant, or that image does not contain ' +
+        'this component.</div>');
+    return;
+  }
+
+  const sw = (inShot[2]-inShot[0])/dpr, sh = (inShot[3]-inShot[1])/dpr;
+  const cw = (inCanon[2]-inCanon[0])/dpr, ch = (inCanon[3]-inCanon[1])/dpr;
+  parts.push('<div class="note">located: canonical ' + cw.toFixed(1) + ' x ' + ch.toFixed(1) +
+             ' pt, capture ' + sw.toFixed(1) + ' x ' + sh.toFixed(1) + ' pt</div>');
+
+  // -- identity gate ---------------------------------------------------------
+  // Height is disqualifying, width is diagnostic. No padding or radius defect
+  // changes height, so a height mismatch means a different component. Width
+  // moving alone with height steady is the padding signature.
+  if (Math.abs(sh - ch) > 2) {
+    log(parts.join("") + '<div class="bad">ABORT: capture height differs by ' +
+        Math.abs(sh-ch).toFixed(1) + ' pt. Padding and radius defects do not change ' +
+        'height. This is a different component, size, or state.</div>');
+    return;
+  }
+  if (Math.abs(sw - cw) > 2) {
+    parts.push('<div class="note">width differs by ' + Math.abs(sw-cw).toFixed(1) +
+               ' pt with height unchanged, which is the padding signature. Continuing.</div>');
+  }
+
+  // -- pad the canonical, then align it onto the element in the capture -------
+  // A node export is cropped tight to the element. Compare at that exact size and
+  // an element that grew wider has its extra width fall outside the window, so
+  // the defect is invisible. Padding the canonical with the capture's background
+  // gives the growth somewhere to show.
+  const M = Math.round(20 * dpr);
+  const bgx = Math.max(0, inShot[0] - Math.round(M / 2));
+  const bgy = Math.min(A.height - 1, inShot[1] + Math.round((inShot[3] - inShot[1]) / 2));
+  const bi = (bgy * A.width + bgx) * 4;
+  const bg = [A.data[bi], A.data[bi + 1], A.data[bi + 2]];
+
+  const CAN = padded(B, M, bg);
+
+  // Align by the element's CENTRE, not its top left. A component sits centred in
+  // its container, so symmetric padding growth pushes both edges outward. Aligning
+  // by the left edge collapses that into a right edge change only, and the
+  // two-strips-at-both-edges signature never appears.
+  const shotCx = (inShot[0] + inShot[2]) / 2, shotCy = (inShot[1] + inShot[3]) / 2;
+  const canCx = M + (inCanon[0] + inCanon[2]) / 2;
+  const canCy = M + (inCanon[1] + inCanon[3]) / 2;
+  const ox = Math.round(shotCx - canCx);
+  const oy = Math.round(shotCy - canCy);
+  const w = Math.min(CAN.width, A.width - Math.max(0, ox));
+  const h = Math.min(CAN.height, A.height - Math.max(0, oy));
+  if (ox < 0 || oy < 0 || w < 8 || h < 8) {
+    log(parts.join("") + '<div class="bad">The component sits too close to the edge ' +
+        'of the screenshot to compare with a margin. Recapture with the component ' +
+        'further from the edge.</div>');
+    return;
+  }
+  const D = diff(A, CAN, ox, oy, w, h, threshold);
+  const grown = dilate(D.mask, w, h, dl);
+  const cs = cluster(D.mask, grown, w, h, 12, D.delta);
+  const pct = 100 * D.changed / (w * h);
+
+  // The percentage gate is only a backstop, since the dimension check above is
+  // the strong signal. It also has to allow for the legitimate case of an entire
+  // element being very slightly the wrong colour, which covers most of the window
+  // at a tiny delta. So: a lot of area AND a large delta means mismatch. A lot of
+  // area at a small delta is the hardcoded fill signature and must pass through.
+  const worst = cs.length ? cs[0].meanDelta : 0;
+  if (pct >= 60 && worst > 100) {
+    log(parts.join("") + '<div class="bad">ABORT: ' + pct.toFixed(1) +
+        '% of the compared area differs at a mean delta of ' + worst +
+        '. That is not a defect, that is two different things.</div>');
+    return;
+  }
+
+  // -- clusters into findings ------------------------------------------------
+  // Cluster coordinates are relative to the compared frame. Findings need them in
+  // logical points relative to the whole screenshot, so the annotator can place
+  // markers without knowing anything about the crop.
+  const pixel = [];
+  const P = (v, off) => Math.round((v + off) / dpr * 10) / 10;
+  const toBox = b => [P(b[0], ox), P(b[1], oy), P(b[2], ox), P(b[3], oy)];
+
+  // Filter on geometry, not on the shape label. A padding strip classifies as
+  // vertical_edge when it is thin and as area_fill when it is wide, depending on
+  // how far the padding moved. What identifies it either way is that it runs the
+  // full height of the element and there is a matching one at the far side.
+  const edges = cs.filter(c => (c.bbox[3] - c.bbox[1]) / dpr > ch * 0.8);
+  if (edges.length >= 2 && Math.abs(sw - cw) > 1) {
+    const b = [Math.min(edges[0].bbox[0], edges[1].bbox[0]),
+               Math.min(edges[0].bbox[1], edges[1].bbox[1]),
+               Math.max(edges[0].bbox[2], edges[1].bbox[2]),
+               Math.max(edges[0].bbox[3], edges[1].bbox[3])];
+    pixel.push({
+      id: "padding_x", property: "paddingHorizontal", layer: "pixel", severity: "major",
+      spec: spec.paddingLeft + " pt" + (spec.bound.paddingLeft ? "  (" + spec.bound.paddingLeft + ")" : ""),
+      observed: (spec.paddingLeft + (sw - cw) / 2).toFixed(1) + " pt",
+      evidence: "two full height strips at both edges, element " + sw.toFixed(0) +
+                "x" + sh.toFixed(0) + " pt against " + cw.toFixed(0) + "x" + ch.toFixed(0) + " canonical",
+      bbox: toBox(b)
+    });
+  }
+
+  const smalls = cs.filter(c => shapeOf(c, dpr) === "corner_or_small_detail");
+  if (smalls.length >= 4 && !pixel.length) {
+    const b = smalls.reduce((a, c) => [Math.min(a[0],c.bbox[0]), Math.min(a[1],c.bbox[1]),
+                                       Math.max(a[2],c.bbox[2]), Math.max(a[3],c.bbox[3])],
+                            [1e9,1e9,-1,-1]);
+    pixel.push({
+      id: "radius", property: "cornerRadius", layer: "pixel", severity: "major",
+      spec: spec.cornerRadius + " pt" + (spec.bound.topLeftRadius ? "  (" + spec.bound.topLeftRadius + ")" : ""),
+      observed: "differs, " + smalls.length + " corner clusters",
+      evidence: "small clusters at the corners and nowhere else",
+      bbox: toBox(b)
+    });
+  }
+
+  const big = cs.filter(c => shapeOf(c, dpr) === "area_fill" && c.fill > 0.85
+                          && c.meanDelta < 40);
+  if (big.length) {
+    const c = big[0];
+    pixel.push({
+      id: "fill_delta", property: "fill", layer: "token", severity: "major",
+      spec: spec.fill + (spec.fillBound ? "  (" + spec.fillBound + ")" : ""),
+      observed: "differs by " + c.meanDelta + " of 765 across the whole element",
+      evidence: "large area, fill ratio " + c.fill + ", tiny delta. That is a " +
+                "hardcoded value rather than a bound variable.",
+      bbox: toBox(c.bbox)
+    });
+  }
+
+  const glyphs = cs.filter(c => shapeOf(c, dpr) === "glyph_or_text");
+  if (glyphs.length >= 3) {
+    const b = glyphs.reduce((a, c) => [Math.min(a[0],c.bbox[0]), Math.min(a[1],c.bbox[1]),
+                                       Math.max(a[2],c.bbox[2]), Math.max(a[3],c.bbox[3])],
+                            [1e9,1e9,-1,-1]);
+    pixel.push({
+      id: "text_drift", property: "label position", layer: "pixel", severity: "minor",
+      spec: "matches canonical",
+      observed: glyphs.length + " glyph clusters differ",
+      evidence: "scattered clusters over a text run, consistent with baseline or " +
+                "letter spacing drift",
+      bbox: toBox(b)
+    });
+  }
+
+  const all = tokenFindings.concat(pixel);
+
+  parts.push('<div class="note">' + cs.length + ' clusters, ' + pct.toFixed(3) +
+             '% changed, threshold ' + threshold + '</div><hr>');
+
+  if (!all.length) {
+    parts.push('<div class="card"><div class="h">No findings</div><div class="ev">' +
+      'Nothing above threshold, and every geometry property is bound. If this is a ' +
+      'real device capture rather than a fixture, the number above is your noise floor.' +
+      '</div></div>');
+  }
+  all.forEach((f, i) => {
+    parts.push('<div class="card"><div class="h">' + (i+1) + '. ' + f.property + '</div>' +
+      '<div class="m">' + f.layer + ' &middot; ' + f.severity + '</div>' +
+      '<div class="kv"><span>spec</span><span>' + f.spec + '</span></div>' +
+      '<div class="kv obs"><span>observed</span><span>' + f.observed + '</span></div>' +
+      '<div class="ev">' + f.evidence + '</div></div>');
+  });
+  log(parts.join(""));
+
+  lastPayload = {
+    findings: all,
+    shotNodeId: data.shotNodeId,
+    device: data.device,
+    logicalShot: [data.shotPixels[0] / dpr, data.shotPixels[1] / dpr],
+    title: spec.name,
+    subtitle: all.length + " findings  \u00b7  " + data.device.name + " @" + dpr +
+              "x  \u00b7  " + cs.length + " clusters, " + pct.toFixed(3) +
+              "% changed  \u00b7  threshold " + threshold
+  };
+  $("draw").style.display = all.some(f => f.bbox) ? "block" : "none";
+}
+
+// ------------------------------------------------------------------ wiring
+document.querySelectorAll(".tab").forEach(t => {
+  t.onclick = () => {
+    document.querySelectorAll(".tab").forEach(x => x.classList.remove("on"));
+    t.classList.add("on");
+    $("pane-compare").style.display = t.dataset.p === "compare" ? "block" : "none";
+    $("pane-tokens").style.display  = t.dataset.p === "tokens"  ? "block" : "none";
+  };
+});
+
+$("audit").onclick = () => {
+  $("alog").innerHTML = '<div class="note">reading the variable graph\u2026</div>';
+  parent.postMessage({ pluginMessage: { type: "audit" } }, "*");
+};
+
+$("run").onclick = () => {
+  log('<div class="note">reading selection\u2026</div>');
+  parent.postMessage({ pluginMessage: { type: "collect" } }, "*");
+};
+$("draw").onclick = () => {
+  parent.postMessage({ pluginMessage: { type: "annotate", payload: lastPayload } }, "*");
+};
+
+onmessage = async (e) => {
+  const m = e.data.pluginMessage;
+  if (!m) return;
+  if (m.type === "selection") {
+    $("slotShot").className = "slot" + (m.shot ? "" : " empty");
+    $("slotShot").innerHTML = m.shot ? "screenshot: <b>" + m.shot + "</b>" : "no screenshot selected";
+    $("slotComp").className = "slot" + (m.comp ? "" : " empty");
+    $("slotComp").innerHTML = m.comp ? "component: <b>" + m.comp + "</b>" : "no component selected";
+    $("run").disabled = !(m.shot && m.comp);
+  }
+  if (m.type === "collected") {
+    if (m.error) { log('<div class="bad">' + m.error + '</div>'); return; }
+    try { await run(m); }
+    catch (err) { log('<div class="bad">' + err.message + '</div>'); }
+  }
+  if (m.type === "audited") {
+    const v = m.variables, cset = m.componentSet;
+    const all = v.findings.concat(cset ? cset.findings : []);
+    const out = [];
+
+    out.push('<div class="note">' + v.variableCount + ' variables across ' +
+      v.collections.map(c => c.name + ' (' + c.modes.length + ' mode' +
+      (c.modes.length === 1 ? '' : 's') + ')').join(', ') + '</div>');
+    if (cset) {
+      out.push('<div class="note">' + cset.name + ': ' + cset.variantCount +
+               ' variants</div>');
+      if (cset.sizeRows && cset.sizeRows.length) {
+        out.push('<div class="note">padding by size: ' + cset.sizeRows
+          .sort((a,b) => a.height - b.height)
+          .map(r => r.size + ' ' + r.values.join('/')).join('  \u00b7  ') + '</div>');
+      }
+    } else {
+      out.push('<div class="note">No component set selected, so the size ramp ' +
+               'was not checked.</div>');
+    }
+    out.push('<hr>');
+
+    if (!all.length) {
+      out.push('<div class="clean"><b>Clean</b>No state collisions, no ladder ' +
+               'misalignment, no unbound geometry.</div>');
+    }
+    const order = { major: 0, minor: 1, info: 2 };
+    all.sort((a,b) => order[a.severity] - order[b.severity]).forEach(f => {
+      out.push('<div class="card ' + f.severity + '">' +
+        '<div class="rule">' + f.rule + ' &middot; ' + f.severity + '</div>' +
+        '<div class="h">' + f.title + '</div>' +
+        '<div class="ev">' + f.detail + '</div>' +
+        '<div class="fix">' + f.fix + '</div></div>');
+    });
+    $("alog").innerHTML = out.join("");
+  }
+  if (m.type === "annotated") {
+    log($("log").innerHTML + '<div class="note">' + m.note + '</div>');
+  }
+};
+</script>
+</body>
+</html>
