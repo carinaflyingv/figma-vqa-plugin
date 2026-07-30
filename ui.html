@@ -303,6 +303,11 @@ async function run(data) {
     return;
   }
 
+  parts.push('<div class="note">comparing against <b>' + spec.name + '</b>, located ' +
+             'by its ' + (spec.locateVia || "fill") + ' ' + spec.fill +
+             (spec.paintedOn ? ' (read from the inner layer "' + spec.paintedOn + '")' : '') +
+             '</div>');
+
   const shotImg = await decode(data.shotBytes);
   const canonImg = await decode(data.canonBytes);
   const A = toData(shotImg, $("cA"));
@@ -532,6 +537,9 @@ onmessage = async (e) => {
     if (m.error) { log('<div class="bad">' + m.error + '</div>'); return; }
     try { await run(m); }
     catch (err) { log('<div class="bad">' + err.message + '</div>'); }
+  }
+  if (m.type === "audit_error") {
+    $("alog").innerHTML = '<div class="bad">' + m.error.replace(/\n/g, "<br>") + '</div>';
   }
   if (m.type === "progress") {
     $("alog").innerHTML = '<div class="note">' + m.text + '</div>';

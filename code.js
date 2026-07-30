@@ -65,16 +65,29 @@ async function readSpec(node) {
     }
   }
 
-  let fill = null, fillBound = null;
-  if ("fills" in node && Array.isArray(node.fills)) {
-    for (const f of node.fills) {
-      if (f.type === "SOLID") { fill = hex(f.color); break; }
+  let fill = null, fillBound = null, locateVia = "fill", paintedOn = null;
+  let paintNode = findPaintedNode(node, "fills");
+  if (paintNode) {
+    fill = hex(solidOf(paintNode, "fills"));
+    if (paintNode !== node) paintedOn = paintNode.name;
+  } else {
+    // An outlined button has no fill. Its border is the only thing distinctive
+    // enough to find it by, so use that instead and say so.
+    paintNode = findPaintedNode(node, "strokes");
+    if (paintNode) {
+      fill = hex(solidOf(paintNode, "strokes"));
+      locateVia = "stroke";
+      if (paintNode !== node) paintedOn = paintNode.name;
     }
   }
-  if (bv.fills && bv.fills[0]) {
-    const v = await figma.variables.getVariableByIdAsync(bv.fills[0].id);
-    fillBound = v ? v.name : null;
+  const styleNode = paintNode || node;
+  if (styleNode.boundVariables && styleNode.boundVariables.fills &&
+      styleNode.boundVariables.fills[0]) {
+    const fv = await figma.variables.getVariableByIdAsync(
+      styleNode.boundVariables.fills[0].id).catch(() => null);
+    if (fv) fillBound = fv.name;
   }
+
 
   // unbound geometry is a finding before any image is involved
   const unbound = [];
@@ -94,15 +107,53 @@ async function readSpec(node) {
     paddingTop: node.paddingTop,
     paddingBottom: node.paddingBottom,
     itemSpacing: node.itemSpacing,
-    cornerRadius: typeof node.cornerRadius === "number" ? node.cornerRadius : null,
+    cornerRadius: typeof styleNode.cornerRadius === "number" ? styleNode.cornerRadius
+                : (typeof node.cornerRadius === "number" ? node.cornerRadius : null),
     fill: fill,
     fillBound: fillBound,
+    locateVia: locateVia,
+    paintedOn: paintedOn,
     bound: bound,
     unbound: unbound
   };
 }
 
 // ---------------------------------------------------------------- selection
+function solidOf(node, key) {
+  const list = node[key];
+  if (!Array.isArray(list)) return null;
+  for (const p of list) if (p.type === "SOLID" && p.visible !== false) return p.color;
+  return null;
+}
+
+// The visual styling often is not on the variant root. In Fusion the fill,
+// radius and padding all live on a nested auto layout frame, so reading only the
+// top node reports nothing and the whole locate-by-colour step gives up. Search
+// descendants and take the largest filled one, which is the background rather
+// than an icon or a label.
+function findPaintedNode(node, key) {
+  let best = null, bestArea = 0;
+  (function walk(n) {
+    const c = solidOf(n, key);
+    if (c) {
+      const area = (n.width || 0) * (n.height || 0);
+      if (area > bestArea) { bestArea = area; best = n; }
+    }
+    if ("children" in n) for (const ch of n.children) walk(ch);
+  })(node);
+  return best;
+}
+
+function pickLocatable(set) {
+  let withStroke = null;
+  for (const c of set.children) {
+    if (c.type !== "COMPONENT") continue;
+    if (findPaintedNode(c, "fills")) return c;
+    if (!withStroke && findPaintedNode(c, "strokes")) withStroke = c;
+  }
+  return withStroke;
+}
+
 function classifySelection() {
   const sel = figma.currentPage.selection;
   let shot = null, comp = null;
@@ -111,8 +162,13 @@ function classifySelection() {
     if (!comp && (n.type === "COMPONENT" || n.type === "INSTANCE" ||
                   n.type === "FRAME" || n.type === "COMPONENT_SET")) comp = n;
   }
-  // a COMPONENT_SET cannot be exported meaningfully, walk to its first child
-  if (comp && comp.type === "COMPONENT_SET" && comp.children.length) comp = comp.children[0];
+  // A component set cannot be compared directly, so walk into it. The first
+  // child is often a text only or ghost variant with no fill, and the whole
+  // locate-by-colour approach needs something to find. So prefer a variant that
+  // has a solid fill, then one with a solid stroke, and only then give up.
+  if (comp && comp.type === "COMPONENT_SET" && comp.children.length) {
+    comp = pickLocatable(comp) || comp.children[0];
+  }
   return { shot, comp };
 }
 
@@ -687,8 +743,16 @@ figma.ui.onmessage = async (msg) => {
       const res = await auditVariables(root ? [root] : sel);
       let setRes = null;
       if (root) {
-        setRes = await auditComponentSet(root);
-        setRes.name = root.name;
+        try {
+          setRes = await auditComponentSet(root);
+          setRes.name = root.name;
+        } catch (e) {
+          setRes = { findings: [{ rule: "size ramp check failed", severity: "info",
+            title: "Could not read the component set",
+            detail: String((e && e.message) || e),
+            fix: "The variable audit above still ran." }],
+            variantCount: 0, sizeRows: [], name: root.name };
+        }
       }
       figma.ui.postMessage({ type: "audited", variables: res, componentSet: setRes });
     } else if (msg.type === "annotate") {
@@ -697,7 +761,14 @@ figma.ui.onmessage = async (msg) => {
       figma.notify(note);
     }
   } catch (e) {
-    figma.ui.postMessage({ type: "collected", error: String(e && e.message || e) });
+    // Route the error back to the pane that asked, or it lands in a hidden tab
+    // and the user sees a blank panel with no explanation.
+    const detail = String((e && e.message) || e) +
+                   ((e && e.stack) ? "\n" + String(e.stack).split("\n")[1] : "");
+    figma.ui.postMessage({
+      type: msg.type === "audit" ? "audit_error" : "collected",
+      error: detail
+    });
   }
 };
 
