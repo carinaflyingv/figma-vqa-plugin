@@ -53,11 +53,6 @@
   .kv.obs span:last-child { color: var(--flag); font-weight: 600; }
   .ev { color: var(--soft); font-size: 10px; margin-top: 5px; }
   hr { border: 0; border-top: 1px solid var(--rule); margin: 14px 0; }
-  .tabs { display: flex; gap: 4px; margin: 10px 0 12px;
-          background: var(--surface); padding: 3px; border-radius: 9px; }
-  .tab { flex: 1; text-align: center; padding: 6px; border-radius: 7px;
-         font-size: 11px; font-weight: 600; color: var(--soft); cursor: pointer; }
-  .tab.on { background: #fff; color: var(--ink); }
   .card.major { border-left: 3px solid var(--flag); }
   .card.minor { border-left: 3px solid #d99b00; }
   .card.info  { border-left: 3px solid var(--rule); }
@@ -66,19 +61,35 @@
   .fix { font-size: 10px; color: var(--brand); margin-top: 6px; }
   .clean { text-align: center; padding: 24px 12px; color: var(--soft); }
   .clean b { display: block; font-size: 22px; color: var(--brand); margin-bottom: 4px; }
+  .info {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 14px; height: 14px; margin-left: 5px; border-radius: 50%;
+    border: 1px solid var(--rule); color: var(--soft);
+    font-size: 9px; font-weight: 600; cursor: help; position: relative;
+    vertical-align: middle;
+  }
+  .info:hover { border-color: var(--brand); color: var(--brand); }
+  .info .tip {
+    display: none; position: absolute; left: 18px; top: -4px; z-index: 20;
+    width: 250px; padding: 10px 12px; border-radius: 8px;
+    background: var(--ink); color: #fff; font-size: 10.5px; font-weight: 400;
+    line-height: 1.45; text-align: left; letter-spacing: 0; cursor: default;
+    box-shadow: 0 6px 20px rgba(7,30,69,0.22);
+  }
+  .info:hover .tip { display: block; }
+  .info .tip b { color: #fff; }
+  .info.left .tip { left: auto; right: 18px; }
+  .tip em { font-style: normal; color: #b9c6dd; }
   canvas { display: none; }
 </style>
 </head>
 <body>
 
 <h1>Prisme VQA</h1>
-<div class="tabs">
-  <div class="tab on" data-p="compare">Compare</div>
-  <div class="tab" data-p="tokens">Tokens</div>
-</div>
 
-<div id="pane-compare">
-<div class="sub">Select a pasted screenshot and the component variant it should match.</div>
+<div class="sub">Select a pasted screenshot and the component variant it should
+match. Compares the rendered result against the design and reports what differs, in
+numbers.</div>
 
 <div class="row"><div class="slot empty" id="slotShot">no screenshot selected</div></div>
 <div class="row"><div class="slot empty" id="slotComp">no component selected</div></div>
@@ -104,28 +115,23 @@
 <button id="resize" class="ghost">Resize screenshot to logical points</button>
 
 <label class="opt">
-  <span>Threshold <b id="thVal">12</b></span>
+  <span>Threshold <b id="thVal">12</b><span class="info left">i<span class="tip">How different two pixels must be before they count as different. Summed across red, green and blue, so the scale is <b>0 to 765</b>. At 12 a pixel has to be off by about 4 per channel.<br><br><em>Lower</em> catches more, and picks up rendering noise. <em>Higher</em> only catches obvious differences and will miss a hardcoded hex, which is the whole point of the low delta signature.<br><br>Tune it with a control capture: run one you believe is correct, see what it reports, set the threshold just above that.</span></span></span>
   <input type="range" id="th" min="4" max="60" value="12">
 </label>
 <label class="opt">
-  <span>Cluster merge <b id="dlVal">2</b></span>
+  <span>Cluster merge <b id="dlVal">2</b><span class="info left">i<span class="tip">How aggressively neighbouring differing pixels are grouped into one finding.<br><br><em>1</em> reports many small clusters, so a shifted label becomes forty glyph fragments. <em>2</em> merges them into readable regions. <em>3 to 4</em> start merging unrelated things, so a padding change and a label shift become one blob.<br><br>Leave it at 2 unless several geometry defects sit on the same element and you need them separated.</span></span></span>
   <input type="range" id="dl" min="1" max="4" value="2">
 </label>
 <label class="opt">
-  <span>Colour floor <b id="cfVal">0.10%</b></span>
+  <span>Colour floor <b id="cfVal">0.10%</b><span class="info left">i<span class="tip">The smallest share of the element a colour must cover before the palette sweep reports on it.<br><br>At <b>0.10%</b> a 1pt divider registers. Below about 0.05% the antialiased blends along every edge start appearing as colours of their own, which is noise rather than signal.<br><br>Raise it if small details are creating chatter, lower it if something real is being missed.</span></span></span>
   <input type="range" id="cf" min="2" max="200" value="10">
 </label>
 
 <button id="run" disabled>Compare</button>
 <button id="draw" class="ghost" style="display:none">Annotate in Figma</button>
 <div id="log"></div>
-</div>
 
-<div id="pane-tokens" style="display:none">
-  <div class="sub">Audits the variable graph. No screenshot needed. Select a
-  component set as well to check its size ramp.</div>
-  <button id="audit">Run audit</button>
-  <div id="alog"></div>
+
 </div>
 <canvas id="cA"></canvas>
 <canvas id="cB"></canvas>
@@ -654,24 +660,49 @@ async function run(data) {
     const padShotR = (inShot[2] - shotC.box[2]) / dpr;
     const dL = padShotL - padCanonL, dR = padShotR - padCanonR;
 
+    // Figma's paddingLeft is measured to the TEXT NODE's box. This measures to
+    // the visible ink. A text node is normally a little wider than its ink, but
+    // when the two disagree by a lot the node is carrying width the text does not
+    // use, which is itself worth knowing: the button looks more padded than its
+    // padding value says, and the value cannot be compared to anything measured
+    // off a screenshot.
+    const phantom = padCanonL - spec.paddingLeft;
+    if (phantom > 2) {
+      pixel.push({
+        id: "phantom_padding", property: "text node wider than its text",
+        layer: "token", severity: "minor",
+        spec: "paddingLeft " + spec.paddingLeft + " pt" +
+              (spec.bound.paddingLeft ? " (" + spec.bound.paddingLeft + ")" : ""),
+        observed: padCanonL.toFixed(1) + " pt from the element edge to the visible ink",
+        evidence: "The label's node is about " + (phantom * 2).toFixed(0) + " pt " +
+                  "wider than the text inside it, so the component is that much " +
+                  "wider than its padding value suggests. Usually a text layer set " +
+                  "to fill or given a fixed width rather than hugging. It also " +
+                  "means the declared padding cannot be checked against a " +
+                  "screenshot directly.",
+        bbox: null
+      });
+    }
+
     if (Math.abs(dL) >= 1 || Math.abs(dR) >= 1) {
       padFinding = true;
       const both = Math.abs(dL - dR) < 1.5;
       pixel.push({
-        id: "padding_x", property: "paddingHorizontal", layer: "pixel",
+        id: "padding_x", property: "space around the label", layer: "pixel",
         severity: Math.max(Math.abs(dL), Math.abs(dR)) >= 2 ? "major" : "minor",
-        spec: spec.paddingLeft + " pt" +
-              (spec.bound.paddingLeft ? "  (" + spec.bound.paddingLeft + ")" : "") +
-              ", measured " + padCanonL.toFixed(1) + " / " + padCanonR.toFixed(1),
+        spec: padCanonL.toFixed(1) + " / " + padCanonR.toFixed(1) + " pt to the ink" +
+              (phantom > 2 ? "  (declared padding is " + spec.paddingLeft + " pt)" : ""),
         observed: padShotL.toFixed(1) + " / " + padShotR.toFixed(1) + " pt  (" +
                   (dL >= 0 ? "+" : "") + dL.toFixed(1) + " left, " +
                   (dR >= 0 ? "+" : "") + dR.toFixed(1) + " right)",
-        evidence: both
-          ? "Both sides moved by the same amount, so this is padding rather than " +
-            "the label having shifted. Measured edge to content, so it does not " +
-            "depend on the label text matching."
+        evidence: (both
+          ? "Both sides moved by the same amount, so this is spacing rather than " +
+            "the label having shifted. "
           : "The two sides moved by different amounts, which is an alignment or " +
-            "content offset rather than a symmetric padding change.",
+            "content offset rather than symmetric spacing. ") +
+          "Both figures are measured element edge to visible ink, so they are " +
+          "directly comparable to each other even though neither equals Figma's " +
+          "declared padding.",
         bbox: toBox([inShot[0]-ox, inShot[1]-oy, inShot[2]-ox, inShot[3]-oy])
       });
       claim(cs.filter(c => (c.bbox[3]-c.bbox[1])/dpr > ch * 0.8));
@@ -965,20 +996,6 @@ async function run(data) {
 }
 
 // ------------------------------------------------------------------ wiring
-document.querySelectorAll(".tab").forEach(t => {
-  t.onclick = () => {
-    document.querySelectorAll(".tab").forEach(x => x.classList.remove("on"));
-    t.classList.add("on");
-    $("pane-compare").style.display = t.dataset.p === "compare" ? "block" : "none";
-    $("pane-tokens").style.display  = t.dataset.p === "tokens"  ? "block" : "none";
-  };
-});
-
-$("audit").onclick = () => {
-  $("alog").innerHTML = '<div class="note">reading the variable graph\u2026</div>';
-  parent.postMessage({ pluginMessage: { type: "audit" } }, "*");
-};
-
 function chosenDevice() {
   const v = $("dev").value;
   if (v === "auto") return null;
@@ -1017,58 +1034,6 @@ onmessage = async (e) => {
     if (m.error) { log('<div class="bad">' + m.error + '</div>'); return; }
     try { await run(m); }
     catch (err) { log('<div class="bad">' + err.message + '</div>'); }
-  }
-  if (m.type === "audit_error") {
-    $("alog").innerHTML = '<div class="bad">' + m.error.replace(/\n/g, "<br>") + '</div>';
-  }
-  if (m.type === "progress") {
-    $("alog").innerHTML = '<div class="note">' + m.text + '</div>';
-  }
-  if (m.type === "audited") {
-    const v = m.variables, cset = m.componentSet;
-    const all = v.findings.concat(cset ? cset.findings : []);
-    const out = [];
-
-    out.push('<div class="note">' + v.variableCount + ' variables (' +
-      (v.sourceNote || '') + ') across ' +
-      v.collections.map(c => c.name + ' (' + c.modes.length + ' mode' +
-      (c.modes.length === 1 ? '' : 's') + ')').join(', ') + '</div>');
-    if (cset) {
-      out.push('<div class="note">' + cset.name + ': ' + cset.variantCount +
-               ' variants</div>');
-      if (cset.sizeRows && cset.sizeRows.length) {
-        out.push('<div class="note">padding by size: ' + cset.sizeRows
-          .sort((a,b) => a.height - b.height)
-          .map(r => r.size + ' ' + r.values.join('/') + ' [' + r.tokens.join(', ') + ']')
-          .join('  \u00b7  ') + '</div>');
-      }
-      if (cset.paddingFoundOn) {
-        out.push('<div class="note">padding read from the inner frame "' +
-                 cset.paddingFoundOn + '", not the variant itself</div>');
-      }
-    } else {
-      out.push('<div class="note">No component set selected, so the size ramp ' +
-               'was not checked.</div>');
-    }
-    if (v.truncated) {
-      out.push('<div class="bad">Stopped at ' + v.variableCount + ' variables. ' +
-        'The library is larger than the cap, so this is a partial audit.</div>');
-    }
-    out.push('<hr>');
-
-    if (!all.length) {
-      out.push('<div class="clean"><b>Clean</b>No state collisions, no ladder ' +
-               'misalignment, no unbound geometry.</div>');
-    }
-    const order = { major: 0, minor: 1, info: 2 };
-    all.sort((a,b) => order[a.severity] - order[b.severity]).forEach(f => {
-      out.push('<div class="card ' + f.severity + '">' +
-        '<div class="rule">' + f.rule + ' &middot; ' + f.severity + '</div>' +
-        '<div class="h">' + f.title + '</div>' +
-        '<div class="ev">' + f.detail + '</div>' +
-        '<div class="fix">' + f.fix + '</div></div>');
-    });
-    $("alog").innerHTML = out.join("");
   }
   if (m.type === "resized") {
     log('<div class="note">' + m.note + '</div>');

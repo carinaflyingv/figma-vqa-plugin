@@ -47,37 +47,7 @@ Height is disqualifying, width is diagnostic. No padding or radius defect change
 height, so a height mismatch aborts. Width moving alone with height steady is the
 padding signature, and it says so and continues.
 
-## Tokens tab
-
-Audits the variable graph. No screenshot, no MCP, no network. Select a component
-set as well and it also checks the size ramp.
-
-Four rules, all of which independently rediscovered real defects in Prisme:
-
-**State collision.** Two states resolving to the same value in every mode. A
-pressed state aliased to the same token as default has no press feedback. On web a
-hover state hides it. On a native app, which has no hover, the control simply does
-not respond.
-
-**Ladder misalignment.** A numbered token that reaches a different numbered target
-depending on the mode. A Segment `primary700` pointing at `stone700` in one mode
-and `iris800` in another reads as consistent and is not. Anyone using the table
-will assume straight across and be wrong.
-
-**Unreferenced base tokens.** Harmless alone, but an unused rung inside a numbered
-ramp pushes everything above it out of alignment. This is usually the root cause
-when the rule above fires.
-
-**Size ramp consistency**, when a component set is selected. Every variant at one
-size should use the same padding token regardless of content type, and padding
-should step by a constant amount across sizes. Also flags variants with raw
-geometry values instead of bindings.
-
-Validated against the Prisme graph as it stood before the fixes. It found the
-pressed state collision, the iris offset across four rungs, and named `iris400`,
-the unused rung that caused the offset, without being told what to look for.
-
-## What the Compare tab reports
+## What it reports
 
 **Token layer**, no image needed. Geometry properties with no variable binding are
 a finding before anything is compared.
