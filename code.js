@@ -349,6 +349,63 @@ async function annotate(payload) {
     figma.currentPage.appendChild(num); marks.push(num);
   });
 
+  // ---- redline dimensions ---------------------------------------------------
+  // Developers read spacing as a measured gap, not as a highlighted box. Draw the
+  // span itself with end ticks and the number on it, plus what it was, so the
+  // change is legible without opening the findings panel.
+  F.forEach(function (f, i) {
+    if (!f.measures) return;
+    f.measures.forEach(function (m) {
+      const x0 = shot.x + m.from[0] * kx, y0 = shot.y + m.from[1] * ky;
+      const x1 = shot.x + m.to[0] * kx,   y1 = shot.y + m.to[1] * ky;
+      const horizontal = Math.abs(x1 - x0) >= Math.abs(y1 - y0);
+      const len = Math.sqrt((x1-x0)*(x1-x0) + (y1-y0)*(y1-y0));
+      if (len < 2) return;
+
+      const span = figma.createLine();
+      span.name = "dim " + m.label;
+      span.x = x0; span.y = y0;
+      span.resize(len, 0);
+      span.rotation = -Math.atan2(y1 - y0, x1 - x0) * 180 / Math.PI;
+      span.strokes = [{ type: "SOLID", color: MAGENTA }];
+      span.strokeWeight = 1;
+      figma.currentPage.appendChild(span); marks.push(span);
+
+      // end ticks, perpendicular to the span
+      [[x0, y0], [x1, y1]].forEach(function (p) {
+        const t = figma.createLine();
+        t.name = "tick";
+        if (horizontal) { t.x = p[0]; t.y = p[1] - 5; t.resize(10, 0); t.rotation = -90; }
+        else            { t.x = p[0] - 5; t.y = p[1]; t.resize(10, 0); }
+        t.strokes = [{ type: "SOLID", color: MAGENTA }];
+        t.strokeWeight = 1;
+        figma.currentPage.appendChild(t); marks.push(t);
+      });
+
+      const lbl = figma.createText();
+      lbl.fontName = { family: "Inter", style: "Semi Bold" };
+      lbl.characters = m.label;
+      lbl.fontSize = 10;
+      lbl.fills = [{ type: "SOLID", color: MAGENTA }];
+      lbl.textAlignHorizontal = "CENTER";
+      lbl.x = (x0 + x1) / 2 - 26; lbl.y = Math.min(y0, y1) - 16;
+      lbl.resize(52, 12);
+      figma.currentPage.appendChild(lbl); marks.push(lbl);
+
+      if (m.spec) {
+        const was = figma.createText();
+        was.fontName = { family: "Inter", style: "Regular" };
+        was.characters = m.spec;
+        was.fontSize = 9;
+        was.fills = [{ type: "SOLID", color: SOFT }];
+        was.textAlignHorizontal = "CENTER";
+        was.x = (x0 + x1) / 2 - 26; was.y = Math.max(y0, y1) + 5;
+        was.resize(52, 11);
+        figma.currentPage.appendChild(was); marks.push(was);
+      }
+    });
+  });
+
   let group = null;
   if (marks.length) {
     group = figma.group(marks, figma.currentPage);

@@ -710,7 +710,21 @@ async function run(data) {
           "Both figures are measured element edge to visible ink, so they are " +
           "directly comparable to each other even though neither equals Figma's " +
           "declared padding.",
-        bbox: toBox([inShot[0]-ox, inShot[1]-oy, inShot[2]-ox, inShot[3]-oy])
+        bbox: toBox([inShot[0]-ox, inShot[1]-oy, inShot[2]-ox, inShot[3]-oy]),
+        // Redline dimensions, in screenshot logical points. A box around the
+        // element says something is wrong with the spacing. These say which gap,
+        // by how much, and against what. That is the difference between a finding
+        // a developer reads and one they can act on.
+        measures: [
+          { from: [inShot[0]/dpr, ((inShot[1]+inShot[3])/2)/dpr],
+            to:   [shotC.box[0]/dpr, ((inShot[1]+inShot[3])/2)/dpr],
+            label: padShotL.toFixed(1) + " pt",
+            spec: "was " + padCanonL.toFixed(1) },
+          { from: [shotC.box[2]/dpr, ((inShot[1]+inShot[3])/2)/dpr],
+            to:   [inShot[2]/dpr, ((inShot[1]+inShot[3])/2)/dpr],
+            label: padShotR.toFixed(1) + " pt",
+            spec: "was " + padCanonR.toFixed(1) }
+        ]
       });
       claim(cs.filter(c => (c.bbox[3]-c.bbox[1])/dpr > ch * 0.8));
     }
