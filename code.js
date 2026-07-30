@@ -140,14 +140,14 @@ function solidOf(node, key) {
 
 // The visual styling often is not on the variant root. In Fusion the fill,
 // radius and padding all live on a nested auto layout frame, so reading only the
-// top node reports nothing and the whole locate-by-colour step gives up. Search
+// top node reports nothing and the whole locate-by-color step gives up. Search
 // descendants and take the largest filled one, which is the background rather
 // than an icon or a label.
 // Find the node carrying the component's background.
 //
 // "Biggest painted descendant" is not enough. A component property container can
 // be full size and carry a paint that is not the background at all, which is how
-// this ended up locating a Fusion button by a dark grey that also appears in
+// this ended up locating a Fusion button by a dark gray that also appears in
 // every label on the screen. So score candidates: the root itself wins outright,
 // then anything whose bounds match the component's, then size. Anything that is
 // not roughly the component's own footprint is rejected.
@@ -194,7 +194,7 @@ function classifySelection() {
   }
   // A component set cannot be compared directly, so walk into it. The first
   // child is often a text only or ghost variant with no fill, and the whole
-  // locate-by-colour approach needs something to find. So prefer a variant that
+  // locate-by-color approach needs something to find. So prefer a variant that
   // has a solid fill, then one with a solid stroke, and only then give up.
   if (comp && comp.type === "COMPONENT_SET" && comp.children.length) {
     comp = pickLocatable(comp) || comp.children[0];

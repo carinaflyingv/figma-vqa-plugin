@@ -38,8 +38,8 @@ its own, matching the dimensions against a table of 17 devices.
 
 ## How it finds the component
 
-It reads the variant's fill colour from the Figma API and scans the screenshot for
-that colour. That is what removes the need to draw a crop box, and it doubles as
+It reads the variant's fill color from the Figma API and scans the screenshot for
+that color. That is what removes the need to draw a crop box, and it doubles as
 the identity check: if the located element is a different size to the canonical,
 these are not the same component.
 
@@ -75,7 +75,7 @@ to the element. Compare at that exact size and an element that grew wider has it
 extra width fall outside the window, so the defect is invisible. First test run:
 a 6pt padding change reported 0.000% changed.
 
-**Align by the element's centre, not its top left.** A component sits centred in
+**Align by the element's center, not its top left.** A component sits centerd in
 its container, so symmetric padding growth pushes both edges outward. Aligning by
 the left edge collapses that into a right edge change only, and the two-strips
 signature never appears. Left-edge alignment gave one cluster. Centre alignment
@@ -86,7 +86,7 @@ are transparent outside the corner radius. Leaving that as zeroed RGB makes the
 corners read as black, which reports as four large false findings on every run.
 
 **The percentage abort gate needs a delta condition.** An entire element being
-very slightly the wrong colour legitimately covers 46% of the window. Aborting on
+very slightly the wrong color legitimately covers 46% of the window. Aborting on
 area alone would suppress exactly the defect class the tool exists to catch. It
 aborts on a lot of area AND a large delta.
 
@@ -100,7 +100,7 @@ against a real build is a capture with no defects at all. Whatever that reports 
 the noise floor, and the threshold slider goes above it.
 
 Only handles one solid fill per component. A gradient or image fill cannot be
-located by colour, so those need a different approach.
+located by color, so those need a different approach.
 
 Full screenshots only. A crop matches no device in the table and is refused rather
 than guessed at.

@@ -125,11 +125,11 @@ numbers.</div>
   <input type="range" id="th" min="4" max="60" value="12">
 </label>
 <label class="opt">
-  <span>Cluster merge <b id="dlVal">2</b><span class="info" tabindex="0">i<span class="tip">How aggressively neighbouring differing pixels are grouped into one finding.<br><br><em>1</em> reports many small clusters, so a shifted label becomes forty glyph fragments. <em>2</em> merges them into readable regions. <em>3 to 4</em> start merging unrelated things, so a padding change and a label shift become one blob.<br><br>Leave it at 2 unless several geometry defects sit on the same element and you need them separated.</span></span></span>
+  <span>Cluster merge <b id="dlVal">2</b><span class="info" tabindex="0">i<span class="tip">How aggressively neighboring differing pixels are grouped into one finding.<br><br><em>1</em> reports many small clusters, so a shifted label becomes forty glyph fragments. <em>2</em> merges them into readable regions. <em>3 to 4</em> start merging unrelated things, so a padding change and a label shift become one blob.<br><br>Leave it at 2 unless several geometry defects sit on the same element and you need them separated.</span></span></span>
   <input type="range" id="dl" min="1" max="4" value="2">
 </label>
 <label class="opt">
-  <span>Colour floor <b id="cfVal">0.10%</b><span class="info" tabindex="0">i<span class="tip">The smallest share of the element a colour must cover before the palette sweep reports on it.<br><br>At <b>0.10%</b> a 1pt divider registers. Below about 0.05% the antialiased blends along every edge start appearing as colours of their own, which is noise rather than signal.<br><br>Raise it if small details are creating chatter, lower it if something real is being missed.</span></span></span>
+  <span>Color floor <b id="cfVal">0.10%</b><span class="info" tabindex="0">i<span class="tip">The smallest share of the element a color must cover before the palette sweep reports on it.<br><br>At <b>0.10%</b> a 1pt divider registers. Below about 0.05% the antialiased blends along every edge start appearing as colors of their own, which is noise rather than signal.<br><br>Raise it if small details are creating chatter, lower it if something real is being missed.</span></span></span>
   <input type="range" id="cf" min="2" max="200" value="10">
 </label>
 
@@ -189,7 +189,7 @@ function flatten(d, bg) {
   return { data: o, width: d.width, height: d.height };
 }
 
-// Grow the canonical onto a larger field of the capture's background colour, so a
+// Grow the canonical onto a larger field of the capture's background color, so a
 // element that changed size has room to differ rather than being cropped away.
 function padded(d, m, bg) {
   const w = d.width + m * 2, h = d.height + m * 2;
@@ -213,13 +213,13 @@ function hexRgb(h) {
 }
 
 // ------------------------------------------------------------------ locating
-// Find the component inside the screenshot by its fill colour. This is what makes
+// Find the component inside the screenshot by its fill color. This is what makes
 // the plugin work without asking the user to draw a crop box, and it doubles as
 // the identity check: if the thing found is a different size to the canonical,
 // these are not the same component and no finding below can be trusted.
 function locate(d, rgb, tol, expect) {
   // Take connected regions, not the bounding box of every matching pixel. The
-  // component's fill colour also appears in text and icons elsewhere on screen,
+  // component's fill color also appears in text and icons elsewhere on screen,
   // and a global bounding box then spans most of the screenshot. When an expected
   // size is known, pick the region closest to it rather than merely the biggest.
   const w = d.width, h = d.height;
@@ -269,7 +269,7 @@ function locate(d, rgb, tol, expect) {
 }
 
 // Find the content inside an element: everything that is not its background.
-// Measured relative to the element's own centre, so a symmetric padding change
+// Measured relative to the element's own center, so a symmetric padding change
 // does not read as the label having moved. This is what turns "something inside
 // differs" into "the label sits 2pt low and is 6pt wider".
 function contentBounds(d, box, rgb, dpr, tol) {
@@ -300,8 +300,8 @@ function contentBounds(d, box, rgb, dpr, tol) {
         ink++;
         ar += d.data[i]; ag += d.data[i+1]; ab += d.data[i+2];
         // Prefer pixels well clear of the fill, so antialiased glyph edges
-        // blending toward the background do not drag the measured colour. But a
-        // label whose colour is merely different, rather than much brighter, has
+        // blending toward the background do not drag the measured color. But a
+        // label whose color is merely different, rather than much brighter, has
         // few such pixels, so fall back to the whole run when the core is thin.
         if (s > tol * 2.5) {
           sr += d.data[i]; sg += d.data[i+1]; sb += d.data[i+2]; core++;
@@ -323,19 +323,19 @@ function contentBounds(d, box, rgb, dpr, tol) {
     // heavier weight, a wider stroke or different letterforms all change how much
     // of the box is filled even when its size does not move.
     ink: ink / Math.max(1, (c + 1 - a) * (e + 1 - b)),
-    colour: core > ink * 0.15
+    color: core > ink * 0.15
       ? [Math.round(sr/core), Math.round(sg/core), Math.round(sb/core)]
       : (ink ? [Math.round(ar/ink), Math.round(ag/ink), Math.round(ab/ink)] : null)
   };
 }
 
-// Every colour the element actually uses, with how much of it there is.
+// Every color the element actually uses, with how much of it there is.
 //
 // The fill and label rules above each look at one thing. A border, an icon, a
-// divider, a badge or a second text colour are all outside their reach, and a
-// design system has plenty of components where the interesting colour is 2% of
+// divider, a badge or a second text color are all outside their reach, and a
+// design system has plenty of components where the interesting color is 2% of
 // the area. This sweeps the whole element instead: mask to its painted shape,
-// bucket every colour inside, and keep anything that covers a meaningful share.
+// bucket every color inside, and keep anything that covers a meaningful share.
 function palette(d, box, pageBg, dpr, minShare) {
   const buckets = {};
   let total = 0;
@@ -344,7 +344,7 @@ function palette(d, box, pageBg, dpr, minShare) {
   // Work row by row and take the span between the first and last pixel that is
   // not the page background, then keep everything inside it. Skipping pixels that
   // merely resemble the page misses a white label on a dark button entirely,
-  // which is exactly the colour most worth checking.
+  // which is exactly the color most worth checking.
   for (let y = box[1]; y < box[3]; y++) {
     let left = -1, right = -1;
     for (let x = box[0]; x < box[2]; x++) {
@@ -371,8 +371,8 @@ function palette(d, box, pageBg, dpr, minShare) {
              n: t.n };
   }).sort((a, b) => b.n - a.n);
 
-  // Merge buckets that are really the same colour split across a boundary, and
-  // absorb antialiased blends into whichever real colour they sit nearest.
+  // Merge buckets that are really the same color split across a boundary, and
+  // absorb antialiased blends into whichever real color they sit nearest.
   const merged = [];
   for (const c of list) {
     const near = merged.find(m =>
@@ -530,7 +530,7 @@ async function run(data) {
   const rgb = hexRgb(spec.fill);
   const inCanon = locate(B, rgb, 60);
   // knowing the canonical's pixel size lets the search pick the right region in
-  // the screenshot rather than the largest patch of a common colour
+  // the screenshot rather than the largest patch of a common color
   const expect = inCanon ? [inCanon[2]-inCanon[0], inCanon[3]-inCanon[1]] : null;
   const inShot = locate(A, rgb, 60, expect);
 
@@ -575,7 +575,7 @@ async function run(data) {
 
   const CAN = padded(B, M, bg);
 
-  // Align by the element's CENTRE, not its top left. A component sits centred in
+  // Align by the element's CENTRE, not its top left. A component sits centerd in
   // its container, so symmetric padding growth pushes both edges outward. Aligning
   // by the left edge collapses that into a right edge change only, and the
   // two-strips-at-both-edges signature never appears.
@@ -599,7 +599,7 @@ async function run(data) {
 
   // The percentage gate is only a backstop, since the dimension check above is
   // the strong signal. It also has to allow for the legitimate case of an entire
-  // element being very slightly the wrong colour, which covers most of the window
+  // element being very slightly the wrong color, which covers most of the window
   // at a tiny delta. So: a lot of area AND a large delta means mismatch. A lot of
   // area at a small delta is the hardcoded fill signature and must pass through.
   const worst = cs.length ? cs[0].meanDelta : 0;
@@ -620,7 +620,7 @@ async function run(data) {
 
   // A hug width component sized to its text cannot be compared by width if the
   // two labels are not the same string. Say so once, loudly, rather than emitting
-  // a padding finding, a size finding and a handful of antialiasing colours that
+  // a padding finding, a size finding and a handful of antialiasing colors that
   // all trace back to the same cause.
   let labelMismatch = false;
   if (canonC && shotC) {
@@ -790,11 +790,11 @@ async function run(data) {
       pixel.push({
         id: "content_offset", property: "label position", layer: "pixel",
         severity: Math.max(Math.abs(ddx), Math.abs(ddy)) >= 2 ? "major" : "minor",
-        spec: "centred in the element",
+        spec: "centerd in the element",
         observed: (ddy ? (ddy > 0 ? ddy + " pt low" : (-ddy) + " pt high") : "") +
                   (ddx && ddy ? ", " : "") +
                   (ddx ? (ddx > 0 ? ddx + " pt right" : (-ddx) + " pt left") : ""),
-        evidence: "content centre measured against the element centre in both " +
+        evidence: "content center measured against the element center in both " +
                   "images, so a padding change does not affect this number",
         // shotC is in screenshot pixels already, so convert straight to points
         bbox: [Math.round(shotC.box[0]/dpr*10)/10, Math.round(shotC.box[1]/dpr*10)/10,
@@ -831,10 +831,10 @@ async function run(data) {
 
   if (canonPal.length && shotPal.length) {
     parts.push('<div class="note">palette at a ' + (floor*100).toFixed(2) +
-      '% floor: ' + canonPal.length + ' colours in the canonical, ' +
+      '% floor: ' + canonPal.length + ' colors in the canonical, ' +
       shotPal.length + ' in the capture' +
       (floor <= 0.0005 ? '. At this floor antialiased blends along edges start ' +
-       'appearing as colours of their own.' : '') + '</div>');
+       'appearing as colors of their own.' : '') + '</div>');
 
     const usedShot = new Set();
     for (const c of canonPal) {
@@ -847,12 +847,12 @@ async function run(data) {
 
       if (best === null || bestD > 150) {
         pixel.push({
-          id: "colour_missing_" + hexOf(c.rgb).slice(1),
-          property: "missing colour " + hexOf(c.rgb),
+          id: "color_missing_" + hexOf(c.rgb).slice(1),
+          property: "missing color " + hexOf(c.rgb),
           layer: "pixel", severity: "major",
           spec: hexOf(c.rgb) + " covering " + (c.share*100).toFixed(1) + "% of the element",
-          observed: "no comparable colour in the capture",
-          evidence: "A colour the design uses does not appear on screen at all. " +
+          observed: "no comparable color in the capture",
+          evidence: "A color the design uses does not appear on screen at all. " +
                     "A border, icon or divider that was dropped, or a state that " +
                     "did not render.",
           bbox: null
@@ -863,14 +863,14 @@ async function run(data) {
       usedShot.add(best);
       const t = shotPal[best];
       // With mismatched geometry the antialiased blends differ everywhere, and
-      // every one of them looks like a small colour shift. Only trust the large
+      // every one of them looks like a small color shift. Only trust the large
       // areas until the elements are actually comparable.
       const minD = labelMismatch ? 40 : 10;
       if (bestD > minD && !(labelMismatch && c.share < 0.06)) {
         const smallArea = c.share < 0.06;
         pixel.push({
-          id: "colour_" + hexOf(c.rgb).slice(1),
-          property: (smallArea ? "detail colour" : "area colour") +
+          id: "color_" + hexOf(c.rgb).slice(1),
+          property: (smallArea ? "detail color" : "area color") +
                     " (" + (c.share*100).toFixed(1) + "% of the element)",
           layer: "pixel", severity: bestD > 60 ? "major" : "minor",
           spec: hexOf(c.rgb),
@@ -878,7 +878,7 @@ async function run(data) {
           evidence: bestD < 40
             ? "Small shift across a consistent area. Typically a hardcoded hex " +
               "rather than a bound variable."
-            : "Materially different colour. Check which token this should resolve to.",
+            : "Materially different color. Check which token this should resolve to.",
           bbox: null
         });
       }
@@ -889,12 +889,12 @@ async function run(data) {
       const nearest = canonPal.reduce((m, c) => Math.min(m, dist(c.rgb, t.rgb)), 1e9);
       if (nearest > 150) {
         pixel.push({
-          id: "colour_extra_" + hexOf(t.rgb).slice(1),
-          property: "unexpected colour " + hexOf(t.rgb),
+          id: "color_extra_" + hexOf(t.rgb).slice(1),
+          property: "unexpected color " + hexOf(t.rgb),
           layer: "pixel", severity: "minor",
           spec: "not present in the design",
           observed: hexOf(t.rgb) + " covering " + (t.share*100).toFixed(1) + "%",
-          evidence: "Something on screen uses a colour the component does not. " +
+          evidence: "Something on screen uses a color the component does not. " +
                     "An overlay, a focus ring, or a state the canonical is not in.",
           bbox: null
         });
@@ -906,16 +906,38 @@ async function run(data) {
   // a label that moved, changed weight, re-rendered in a different font, or an
   // icon that is not the same shape. The tool cannot name which, but it must not
   // stay quiet about it.
-  if (labelExplained && shotC) {
+  if (labelExplained && shotC && canonC) {
+    // Claim the label region in BOTH images. When the two elements are different
+    // widths the label sits at a different x in each, so the diff produces glyph
+    // clusters in two places. Claiming only the capture's position leaves the
+    // canonical's glyphs unaccounted for, and they resurface as "unexplained".
     const pad = 12 * dpr;
+    const inBox = (cx, cy, b) => cx >= b[0]-pad && cx <= b[2]+pad &&
+                                 cy >= b[1]-pad && cy <= b[3]+pad;
     claim(cs.filter(c => {
-      const cx = (c.bbox[0]+c.bbox[2])/2 + ox, cy = (c.bbox[1]+c.bbox[3])/2 + oy;
-      return cx >= shotC.box[0]-pad && cx <= shotC.box[2]+pad &&
-             cy >= shotC.box[1]-pad && cy <= shotC.box[3]+pad;
+      const mx = (c.bbox[0]+c.bbox[2])/2, my = (c.bbox[1]+c.bbox[3])/2;
+      // cluster coordinates are in the compared frame, which is the padded
+      // canonical, so canonC needs no offset and shotC needs the capture's
+      return inBox(mx, my, canonC.box) || inBox(mx + ox, my + oy, shotC.box);
     }));
   }
 
-  const leftover = cs.filter(c => !claimed.has(c));
+  // The catch-all exists so nothing is silently dropped, not so that findings get
+  // reported twice. When rules have already explained what is wrong with the
+  // element, a leftover cluster inside it is almost always the same defect seen
+  // from a different angle. Only speak up when nothing else has, or when the
+  // difference sits outside the element entirely.
+  let leftover = cs.filter(c => !claimed.has(c));
+  if (leftover.length && pixel.length) {
+    leftover = leftover.filter(c => {
+      const cx = (c.bbox[0] + c.bbox[2]) / 2 + ox;
+      const cy = (c.bbox[1] + c.bbox[3]) / 2 + oy;
+      const pad = 4 * dpr;
+      const insideElement = cx >= inShot[0] - pad && cx <= inShot[2] + pad &&
+                            cy >= inShot[1] - pad && cy <= inShot[3] + pad;
+      return !insideElement;
+    });
+  }
   if (leftover.length) {
     const b = leftover.reduce((a, c) => [Math.min(a[0],c.bbox[0]), Math.min(a[1],c.bbox[1]),
                                          Math.max(a[2],c.bbox[2]), Math.max(a[3],c.bbox[3])],
@@ -934,10 +956,9 @@ async function run(data) {
       spec: "matches the canonical",
       observed: leftover.length + " region" + (leftover.length === 1 ? "" : "s") +
                 " differ, " + area + " px, peak delta " + worst,
-      evidence: "No geometry rule accounts for these. Differences inside the " +
-                "element that are not padding, radius or fill usually mean the " +
-                "label or icon rendered differently: wrong font, wrong weight, " +
-                "wrong size, or a different glyph set.",
+      evidence: "Differences outside the element that no rule accounts for. " +
+                "Something adjacent to the component differs: a neighboring " +
+                "element, a shadow, or a background the canonical does not have.",
       bbox: toBox(b)
     });
   }
