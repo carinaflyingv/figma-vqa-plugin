@@ -132,12 +132,18 @@ function solidOf(node, key) {
 // descendants and take the largest filled one, which is the background rather
 // than an icon or a label.
 function findPaintedNode(node, key) {
+  const rootArea = (node.width || 1) * (node.height || 1);
   let best = null, bestArea = 0;
   (function walk(n) {
-    const c = solidOf(n, key);
-    if (c) {
+    // Skip text and vector paint, and skip anything much smaller than the
+    // component. A property container or a label fill is not the background, and
+    // picking one gives a colour that appears all over the screenshot.
+    const skip = n.type === "TEXT" || n.type === "VECTOR" ||
+                 n.visible === false || (n.opacity !== undefined && n.opacity < 0.3);
+    if (!skip) {
+      const c = solidOf(n, key);
       const area = (n.width || 0) * (n.height || 0);
-      if (area > bestArea) { bestArea = area; best = n; }
+      if (c && area >= rootArea * 0.5 && area > bestArea) { bestArea = area; best = n; }
     }
     if ("children" in n) for (const ch of n.children) walk(ch);
   })(node);
@@ -172,7 +178,17 @@ function classifySelection() {
   return { shot, comp };
 }
 
-async function collect() {
+function resolveDevice(size, chosen) {
+  if (chosen && chosen.custom) {
+    return { name: "custom @" + chosen.dpr + "x", dpr: chosen.dpr,
+             lw: Math.round(size.width / chosen.dpr),
+             lh: Math.round(size.height / chosen.dpr) };
+  }
+  if (chosen) return chosen;
+  return matchDevice(size.width, size.height);
+}
+
+async function collect(chosen) {
   const { shot, comp } = classifySelection();
   if (!shot) return { error: "Select the pasted screenshot. It needs an image fill." };
   if (!comp) return { error: "Also select the component variant to compare against." };
@@ -729,8 +745,24 @@ async function auditComponentSet(node) {
 // ---------------------------------------------------------------- messaging
 figma.ui.onmessage = async (msg) => {
   try {
-    if (msg.type === "collect") {
-      const data = await collect();
+    if (msg.type === "resizeOnly") {
+      const { shot } = classifySelection();
+      if (!shot) { figma.ui.postMessage({ type: "resized", note: "Select the pasted screenshot first." }); return; }
+      const img = figma.getImageByHash(imageHashOf(shot));
+      const size = await img.getSizeAsync();
+      const d = resolveDevice(size, msg.device);
+      if (!d) {
+        figma.ui.postMessage({ type: "resized", note: size.width + "x" + size.height +
+          " px matches no device. Pick one from the menu or use Custom scale." });
+        return;
+      }
+      shot.resize(d.lw, d.lh);
+      shot.name = d.name + "  \u00b7  " + d.lw + "x" + d.lh + "pt  @" + d.dpr + "x";
+      figma.viewport.scrollAndZoomIntoView([shot]);
+      figma.ui.postMessage({ type: "resized", note: "resized " + size.width + "x" +
+        size.height + " px to " + d.lw + "x" + d.lh + " pt (" + d.name + " @" + d.dpr + "x)" });
+    } else if (msg.type === "collect") {
+      const data = await collect(msg.device);
       figma.ui.postMessage(Object.assign({ type: "collected" }, data));
     } else if (msg.type === "audit") {
       const sel = figma.currentPage.selection;

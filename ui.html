@@ -26,6 +26,11 @@
   label.opt { display: flex; justify-content: space-between; align-items: center;
               font-size: 11px; color: var(--soft); margin: 6px 0; }
   input[type=range] { width: 160px; }
+  select, input[type=number] {
+    font: inherit; font-size: 11px; padding: 4px 6px; border-radius: 6px;
+    border: 1px solid var(--rule); background: #fff; color: var(--ink);
+    max-width: 250px;
+  }
   button {
     width: 100%; padding: 11px; border: 0; border-radius: 9px;
     background: var(--brand); color: #fff; font-size: 13px; font-weight: 600;
@@ -77,6 +82,26 @@
 
 <div class="row"><div class="slot empty" id="slotShot">no screenshot selected</div></div>
 <div class="row"><div class="slot empty" id="slotComp">no component selected</div></div>
+
+<label class="opt">
+  <span>Device</span>
+  <select id="dev">
+    <option value="auto">Auto detect</option>
+    <option value="375x667x2">iPhone SE / 8 &middot; 375x667 @2x</option>
+    <option value="390x844x3">iPhone 12 / 13 / 14 &middot; 390x844 @3x</option>
+    <option value="393x852x3">iPhone 15 / 16 Pro &middot; 393x852 @3x</option>
+    <option value="430x932x3">iPhone 15 / 16 Pro Max &middot; 430x932 @3x</option>
+    <option value="412x915x2.625">Pixel 8 / 7 &middot; 412x915 @2.625x</option>
+    <option value="360x780x3">Galaxy S24 &middot; 360x780 @3x</option>
+    <option value="744x1133x2">iPad mini &middot; 744x1133 @2x</option>
+    <option value="custom">Custom scale…</option>
+  </select>
+</label>
+<label class="opt" id="dprRow" style="display:none">
+  <span>Scale factor</span>
+  <input type="number" id="dpr" min="0.5" max="6" step="0.05" value="3" style="width:70px">
+</label>
+<button id="resize" class="ghost">Resize screenshot to logical points</button>
 
 <label class="opt">
   <span>Threshold <b id="thVal">12</b></span>
@@ -175,19 +200,55 @@ function hexRgb(h) {
 // the plugin work without asking the user to draw a crop box, and it doubles as
 // the identity check: if the thing found is a different size to the canonical,
 // these are not the same component and no finding below can be trusted.
-function locate(d, rgb, tol) {
-  let x0 = 1e9, y0 = 1e9, x1 = -1, y1 = -1;
-  for (let y = 0; y < d.height; y++) {
-    for (let x = 0; x < d.width; x++) {
-      const i = (y * d.width + x) * 4;
-      const s = Math.abs(d.data[i]-rgb[0]) + Math.abs(d.data[i+1]-rgb[1]) + Math.abs(d.data[i+2]-rgb[2]);
-      if (s < tol) {
-        if (x < x0) x0 = x; if (x > x1) x1 = x;
-        if (y < y0) y0 = y; if (y > y1) y1 = y;
+function locate(d, rgb, tol, expect) {
+  // Take connected regions, not the bounding box of every matching pixel. The
+  // component's fill colour also appears in text and icons elsewhere on screen,
+  // and a global bounding box then spans most of the screenshot. When an expected
+  // size is known, pick the region closest to it rather than merely the biggest.
+  const w = d.width, h = d.height;
+  const hit = new Uint8Array(w * h);
+  for (let i = 0, k = 0; k < w * h; k++, i += 4) {
+    const s = Math.abs(d.data[i]-rgb[0]) + Math.abs(d.data[i+1]-rgb[1]) + Math.abs(d.data[i+2]-rgb[2]);
+    if (s < tol) hit[k] = 1;
+  }
+
+  const seen = new Uint8Array(w * h);
+  const stack = new Int32Array(w * h);
+  const regions = [];
+  for (let s0 = 0; s0 < w * h; s0++) {
+    if (!hit[s0] || seen[s0]) continue;
+    let sp = 0; stack[sp++] = s0; seen[s0] = 1;
+    let x0 = 1e9, y0 = 1e9, x1 = -1, y1 = -1, area = 0;
+    while (sp > 0) {
+      const k = stack[--sp];
+      const x = k % w, y = (k / w) | 0;
+      area++;
+      if (x < x0) x0 = x; if (x > x1) x1 = x;
+      if (y < y0) y0 = y; if (y > y1) y1 = y;
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          const nx = x + dx, ny = y + dy;
+          if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+          const nk = ny * w + nx;
+          if (hit[nk] && !seen[nk]) { seen[nk] = 1; stack[sp++] = nk; }
+        }
       }
     }
+    if (area < 40) continue;
+    regions.push({ box: [x0, y0, x1 + 1, y1 + 1], area: area });
   }
-  return x1 < 0 ? null : [x0, y0, x1 + 1, y1 + 1];
+  if (!regions.length) return null;
+
+  if (expect) {
+    regions.sort((a, b) => {
+      const sa = Math.abs((a.box[2]-a.box[0]) - expect[0]) + Math.abs((a.box[3]-a.box[1]) - expect[1]);
+      const sb = Math.abs((b.box[2]-b.box[0]) - expect[0]) + Math.abs((b.box[3]-b.box[1]) - expect[1]);
+      return sa - sb;
+    });
+  } else {
+    regions.sort((a, b) => b.area - a.area);
+  }
+  return regions[0].box;
 }
 
 // ------------------------------------------------------------------ diff
@@ -303,6 +364,7 @@ async function run(data) {
     return;
   }
 
+  parts.push('<div class="note">' + (data.deviceNote || '') + '</div>');
   parts.push('<div class="note">comparing against <b>' + spec.name + '</b>, located ' +
              'by its ' + (spec.locateVia || "fill") + ' ' + spec.fill +
              (spec.paintedOn ? ' (read from the inner layer "' + spec.paintedOn + '")' : '') +
@@ -315,8 +377,11 @@ async function run(data) {
   const B = flatten(Braw, [255, 255, 255]);
 
   const rgb = hexRgb(spec.fill);
-  const inShot = locate(A, rgb, 60);
   const inCanon = locate(B, rgb, 60);
+  // knowing the canonical's pixel size lets the search pick the right region in
+  // the screenshot rather than the largest patch of a common colour
+  const expect = inCanon ? [inCanon[2]-inCanon[0], inCanon[3]-inCanon[1]] : null;
+  const inShot = locate(A, rgb, 60, expect);
 
   if (!inShot || !inCanon) {
     log('<div class="bad">Fill ' + spec.fill + ' not found in the ' +
@@ -515,9 +580,25 @@ $("audit").onclick = () => {
   parent.postMessage({ pluginMessage: { type: "audit" } }, "*");
 };
 
+function chosenDevice() {
+  const v = $("dev").value;
+  if (v === "auto") return null;
+  if (v === "custom") return { custom: true, dpr: parseFloat($("dpr").value) || 3 };
+  const p = v.split("x").map(Number);
+  return { lw: p[0], lh: p[1], dpr: p[2], name: $("dev").selectedOptions[0].text.split("\u00b7")[0].trim() };
+}
+
+$("dev").onchange = () => {
+  $("dprRow").style.display = $("dev").value === "custom" ? "flex" : "none";
+};
+
+$("resize").onclick = () => {
+  parent.postMessage({ pluginMessage: { type: "resizeOnly", device: chosenDevice() } }, "*");
+};
+
 $("run").onclick = () => {
   log('<div class="note">reading selection\u2026</div>');
-  parent.postMessage({ pluginMessage: { type: "collect" } }, "*");
+  parent.postMessage({ pluginMessage: { type: "collect", device: chosenDevice() } }, "*");
 };
 $("draw").onclick = () => {
   parent.postMessage({ pluginMessage: { type: "annotate", payload: lastPayload } }, "*");
@@ -589,6 +670,9 @@ onmessage = async (e) => {
         '<div class="fix">' + f.fix + '</div></div>');
     });
     $("alog").innerHTML = out.join("");
+  }
+  if (m.type === "resized") {
+    log('<div class="note">' + m.note + '</div>');
   }
   if (m.type === "annotated") {
     log($("log").innerHTML + '<div class="note">' + m.note + '</div>');
