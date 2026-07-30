@@ -659,6 +659,7 @@ async function run(data) {
   // screenshot reading "Button text" against a canonical reading something else
   // and the width always differs, for no reason anyone should act on.
   let padFinding = false;
+  let labelExplained = false;
   if (canonC && shotC && spec.paddingLeft > 0) {
     const padCanonL = (canonC.box[0] - canonBox[0]) / dpr;
     const padCanonR = (canonBox[2] - canonC.box[2]) / dpr;
@@ -799,11 +800,6 @@ async function run(data) {
         bbox: [Math.round(shotC.box[0]/dpr*10)/10, Math.round(shotC.box[1]/dpr*10)/10,
                Math.round(shotC.box[2]/dpr*10)/10, Math.round(shotC.box[3]/dpr*10)/10]
       });
-      claim(cs.filter(c => {
-        const cx = (c.bbox[0]+c.bbox[2])/2 + ox, cy = (c.bbox[1]+c.bbox[3])/2 + oy;
-        return cx >= shotC.box[0]-4 && cx <= shotC.box[2]+4 &&
-               cy >= shotC.box[1]-12 && cy <= shotC.box[3]+12;
-      }));
     }
 
     if (Math.abs(ddw) >= 1 || Math.abs(ddh) >= 1) {
@@ -910,6 +906,15 @@ async function run(data) {
   // a label that moved, changed weight, re-rendered in a different font, or an
   // icon that is not the same shape. The tool cannot name which, but it must not
   // stay quiet about it.
+  if (labelExplained && shotC) {
+    const pad = 12 * dpr;
+    claim(cs.filter(c => {
+      const cx = (c.bbox[0]+c.bbox[2])/2 + ox, cy = (c.bbox[1]+c.bbox[3])/2 + oy;
+      return cx >= shotC.box[0]-pad && cx <= shotC.box[2]+pad &&
+             cy >= shotC.box[1]-pad && cy <= shotC.box[3]+pad;
+    }));
+  }
+
   const leftover = cs.filter(c => !claimed.has(c));
   if (leftover.length) {
     const b = leftover.reduce((a, c) => [Math.min(a[0],c.bbox[0]), Math.min(a[1],c.bbox[1]),
