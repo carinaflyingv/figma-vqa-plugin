@@ -468,6 +468,11 @@ async function run(data) {
   const pixel = [];
   const P = (v, off) => Math.round((v + off) / dpr * 10) / 10;
   const toBox = b => [P(b[0], ox), P(b[1], oy), P(b[2], ox), P(b[3], oy)];
+  // Every cluster must be either claimed by a rule or reported as unexplained.
+  // Silently dropping the leftovers makes a tool that found five differences look
+  // like a tool that found one, which is the worst possible way to be wrong.
+  const claimed = new Set();
+  const claim = cs2 => cs2.forEach(c => claimed.add(c));
 
   // Filter on geometry, not on the shape label. A padding strip classifies as
   // vertical_edge when it is thin and as area_fill when it is wide, depending on
@@ -475,6 +480,7 @@ async function run(data) {
   // full height of the element and there is a matching one at the far side.
   const edges = cs.filter(c => (c.bbox[3] - c.bbox[1]) / dpr > ch * 0.8);
   if (edges.length >= 2 && Math.abs(sw - cw) > 1 && spec.paddingLeft > 0) {
+    claim(edges);
     const b = [Math.min(edges[0].bbox[0], edges[1].bbox[0]),
                Math.min(edges[0].bbox[1], edges[1].bbox[1]),
                Math.max(edges[0].bbox[2], edges[1].bbox[2]),
@@ -491,6 +497,7 @@ async function run(data) {
 
   const smalls = cs.filter(c => shapeOf(c, dpr) === "corner_or_small_detail");
   if (smalls.length >= 4 && !pixel.length) {
+    claim(smalls);
     const b = smalls.reduce((a, c) => [Math.min(a[0],c.bbox[0]), Math.min(a[1],c.bbox[1]),
                                        Math.max(a[2],c.bbox[2]), Math.max(a[3],c.bbox[3])],
                             [1e9,1e9,-1,-1]);
@@ -506,6 +513,7 @@ async function run(data) {
   const big = cs.filter(c => shapeOf(c, dpr) === "area_fill" && c.fill > 0.85
                           && c.meanDelta < 40);
   if (big.length) {
+    claim(big);
     const c = big[0];
     pixel.push({
       id: "fill_delta", property: "fill", layer: "token", severity: "major",
@@ -519,6 +527,7 @@ async function run(data) {
 
   const glyphs = cs.filter(c => shapeOf(c, dpr) === "glyph_or_text");
   if (glyphs.length >= 3) {
+    claim(glyphs);
     const b = glyphs.reduce((a, c) => [Math.min(a[0],c.bbox[0]), Math.min(a[1],c.bbox[1]),
                                        Math.max(a[2],c.bbox[2]), Math.max(a[3],c.bbox[3])],
                             [1e9,1e9,-1,-1]);
@@ -528,6 +537,37 @@ async function run(data) {
       observed: glyphs.length + " glyph clusters differ",
       evidence: "scattered clusters over a text run, consistent with baseline or " +
                 "letter spacing drift",
+      bbox: toBox(b)
+    });
+  }
+
+  // Anything inside the element that no rule claimed is a content difference:
+  // a label that moved, changed weight, re-rendered in a different font, or an
+  // icon that is not the same shape. The tool cannot name which, but it must not
+  // stay quiet about it.
+  const leftover = cs.filter(c => !claimed.has(c));
+  if (leftover.length) {
+    const b = leftover.reduce((a, c) => [Math.min(a[0],c.bbox[0]), Math.min(a[1],c.bbox[1]),
+                                         Math.max(a[2],c.bbox[2]), Math.max(a[3],c.bbox[3])],
+                              [1e9,1e9,-1,-1]);
+    const area = leftover.reduce((a, c) => a + c.area, 0);
+    const worst = Math.max.apply(null, leftover.map(c => c.meanDelta));
+    const inner = leftover.filter(c => {
+      const cx = (c.bbox[0]+c.bbox[2])/2, cy = (c.bbox[1]+c.bbox[3])/2;
+      return cx > inShot[0]-ox + 8*dpr && cx < inShot[2]-ox - 8*dpr;
+    });
+    pixel.push({
+      id: "content_diff",
+      property: inner.length === leftover.length ? "label or icon content" : "unexplained regions",
+      layer: "pixel",
+      severity: worst > 200 ? "major" : "minor",
+      spec: "matches the canonical",
+      observed: leftover.length + " region" + (leftover.length === 1 ? "" : "s") +
+                " differ, " + area + " px, peak delta " + worst,
+      evidence: "No geometry rule accounts for these. Differences inside the " +
+                "element that are not padding, radius or fill usually mean the " +
+                "label or icon rendered differently: wrong font, wrong weight, " +
+                "wrong size, or a different glyph set.",
       bbox: toBox(b)
     });
   }
@@ -547,7 +587,9 @@ async function run(data) {
   const all = tokenFindings.concat(pixel);
 
   parts.push('<div class="note">' + cs.length + ' clusters, ' + pct.toFixed(3) +
-             '% changed, threshold ' + threshold + '</div><hr>');
+             '% changed, threshold ' + threshold +
+             '  \u00b7  ' + claimed.size + ' explained by a rule, ' +
+             (cs.length - claimed.size) + ' not</div><hr>');
 
   if (!all.length) {
     parts.push('<div class="card"><div class="h">No findings</div><div class="ev">' +
