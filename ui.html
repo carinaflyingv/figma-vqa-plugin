@@ -368,6 +368,8 @@ async function run(data) {
   parts.push('<div class="note">comparing against <b>' + spec.name + '</b>, located ' +
              'by its ' + (spec.locateVia || "fill") + ' ' + spec.fill +
              (spec.paintedOn ? ' (read from the inner layer "' + spec.paintedOn + '")' : '') +
+             (spec.geometryOn ? '<br>geometry read from "' + spec.geometryOn + '": padding ' +
+              spec.paddingLeft + '/' + spec.paddingRight + ', gap ' + spec.itemSpacing : '') +
              '</div>');
 
   const shotImg = await decode(data.shotBytes);
@@ -472,7 +474,7 @@ async function run(data) {
   // how far the padding moved. What identifies it either way is that it runs the
   // full height of the element and there is a matching one at the far side.
   const edges = cs.filter(c => (c.bbox[3] - c.bbox[1]) / dpr > ch * 0.8);
-  if (edges.length >= 2 && Math.abs(sw - cw) > 1) {
+  if (edges.length >= 2 && Math.abs(sw - cw) > 1 && spec.paddingLeft > 0) {
     const b = [Math.min(edges[0].bbox[0], edges[1].bbox[0]),
                Math.min(edges[0].bbox[1], edges[1].bbox[1]),
                Math.max(edges[0].bbox[2], edges[1].bbox[2]),
@@ -480,7 +482,7 @@ async function run(data) {
     pixel.push({
       id: "padding_x", property: "paddingHorizontal", layer: "pixel", severity: "major",
       spec: spec.paddingLeft + " pt" + (spec.bound.paddingLeft ? "  (" + spec.bound.paddingLeft + ")" : ""),
-      observed: (spec.paddingLeft + (sw - cw) / 2).toFixed(1) + " pt",
+      observed: Math.max(0, spec.paddingLeft + (sw - cw) / 2).toFixed(1) + " pt",
       evidence: "two full height strips at both edges, element " + sw.toFixed(0) +
                 "x" + sh.toFixed(0) + " pt against " + cw.toFixed(0) + "x" + ch.toFixed(0) + " canonical",
       bbox: toBox(b)
@@ -527,6 +529,18 @@ async function run(data) {
       evidence: "scattered clusters over a text run, consistent with baseline or " +
                 "letter spacing drift",
       bbox: toBox(b)
+    });
+  }
+
+  if (Math.abs(sw - cw) > 1 && !(spec.paddingLeft > 0)) {
+    pixel.push({
+      id: "width_mismatch", property: "width", layer: "pixel", severity: "major",
+      spec: cw.toFixed(1) + " pt",
+      observed: sw.toFixed(1) + " pt",
+      evidence: "The element is a different width but the component reports no " +
+                "horizontal padding, so there is no spec number to compare against. " +
+                "Check whether padding lives on a nested frame this did not reach.",
+      bbox: null
     });
   }
 

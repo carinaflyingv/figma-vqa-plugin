@@ -17,13 +17,13 @@ const DEVICES = [
   [1080, 2340, "Galaxy S24 / S23", 360, 780, 3],
   [1080, 2400, "Pixel 8 / 7", 412, 915, 2.625],
   [1125, 2436, "iPhone X / XS / 11 Pro", 375, 812, 3],
-  [1170, 2532, "iPhone 12 / 13 / 14", 390, 844, 3],
-  [1179, 2556, "iPhone 15 / 16 / 15 Pro", 393, 852, 3],
-  [1206, 2622, "iPhone 16 Pro", 402, 874, 3],
+  [1170, 2532, "iPhone 12 / 13 / 14 / 16e", 390, 844, 3],
+  [1179, 2556, "iPhone 14 Pro / 15 / 16", 393, 852, 3],
+  [1206, 2622, "iPhone 16 / 17 Pro", 402, 874, 3],
   [1242, 2688, "iPhone XS Max / 11 Pro Max", 414, 896, 3],
   [1284, 2778, "iPhone 12 / 13 Pro Max", 428, 926, 3],
-  [1290, 2796, "iPhone 15 / 16 Pro Max", 430, 932, 3],
-  [1320, 2868, "iPhone 16 Pro Max", 440, 956, 3],
+  [1290, 2796, "iPhone 15 Pro Max / 16 Plus", 430, 932, 3],
+  [1320, 2868, "iPhone 16 / 17 Pro Max", 440, 956, 3],
   [1344, 2992, "Pixel 8 Pro", 448, 998, 3],
   [1488, 2266, "iPad mini", 744, 1133, 2],
   [1640, 2360, "iPad Air 10.9", 820, 1180, 2],
@@ -50,12 +50,24 @@ function hex(c) {
 }
 
 // ---------------------------------------------------------------- spec reading
+// Padding, spacing and radius may all sit on different nodes than the variant
+// root. Fusion puts them on a nested auto layout frame, so reading only the root
+// reports 0 and produces findings like "observed -21.5 pt against a spec of 0".
+function geometryNode(node) {
+  let best = null;
+  (function walk(n) {
+    if ((n.paddingLeft > 0 || n.paddingRight > 0 || n.itemSpacing > 0) && !best) best = n;
+    if ("children" in n && !best) for (const c of n.children) walk(c);
+  })(node);
+  return best || node;
+}
+
 async function readSpec(node) {
-  const bv = node.boundVariables || {};
+  const geo = geometryNode(node);
+  const bv = geo.boundVariables || {};
   const bound = {};
   const props = ["paddingLeft", "paddingRight", "paddingTop", "paddingBottom",
-                 "itemSpacing", "topLeftRadius", "topRightRadius",
-                 "bottomLeftRadius", "bottomRightRadius"];
+                 "itemSpacing"];
   for (const k of props) {
     if (bv[k]) {
       const v = await figma.variables.getVariableByIdAsync(bv[k].id);
@@ -91,10 +103,9 @@ async function readSpec(node) {
 
   // unbound geometry is a finding before any image is involved
   const unbound = [];
-  if (node.paddingLeft > 0 && !bound.paddingLeft) unbound.push("paddingLeft");
-  if (node.paddingRight > 0 && !bound.paddingRight) unbound.push("paddingRight");
-  if (node.cornerRadius > 0 && !bound.topLeftRadius) unbound.push("cornerRadius");
-  if (node.itemSpacing > 0 && !bound.itemSpacing) unbound.push("itemSpacing");
+  if (geo.paddingLeft > 0 && !bound.paddingLeft) unbound.push("paddingLeft");
+  if (geo.paddingRight > 0 && !bound.paddingRight) unbound.push("paddingRight");
+  if (geo.itemSpacing > 0 && !bound.itemSpacing) unbound.push("itemSpacing");
   if (fill && !fillBound) unbound.push("fill");
 
   return {
@@ -102,11 +113,12 @@ async function readSpec(node) {
     name: node.name,
     width: node.width,
     height: node.height,
-    paddingLeft: node.paddingLeft,
-    paddingRight: node.paddingRight,
-    paddingTop: node.paddingTop,
-    paddingBottom: node.paddingBottom,
-    itemSpacing: node.itemSpacing,
+    paddingLeft: geo.paddingLeft,
+    paddingRight: geo.paddingRight,
+    paddingTop: geo.paddingTop,
+    paddingBottom: geo.paddingBottom,
+    itemSpacing: geo.itemSpacing,
+    geometryOn: geo !== node ? geo.name : null,
     cornerRadius: typeof styleNode.cornerRadius === "number" ? styleNode.cornerRadius
                 : (typeof node.cornerRadius === "number" ? node.cornerRadius : null),
     fill: fill,
@@ -131,22 +143,34 @@ function solidOf(node, key) {
 // top node reports nothing and the whole locate-by-colour step gives up. Search
 // descendants and take the largest filled one, which is the background rather
 // than an icon or a label.
+// Find the node carrying the component's background.
+//
+// "Biggest painted descendant" is not enough. A component property container can
+// be full size and carry a paint that is not the background at all, which is how
+// this ended up locating a Fusion button by a dark grey that also appears in
+// every label on the screen. So score candidates: the root itself wins outright,
+// then anything whose bounds match the component's, then size. Anything that is
+// not roughly the component's own footprint is rejected.
 function findPaintedNode(node, key) {
-  const rootArea = (node.width || 1) * (node.height || 1);
-  let best = null, bestArea = 0;
-  (function walk(n) {
-    // Skip text and vector paint, and skip anything much smaller than the
-    // component. A property container or a label fill is not the background, and
-    // picking one gives a colour that appears all over the screenshot.
-    const skip = n.type === "TEXT" || n.type === "VECTOR" ||
+  const W = node.width || 1, H = node.height || 1;
+  let best = null, bestScore = -1;
+
+  (function walk(n, depth) {
+    const skip = n.type === "TEXT" || n.type === "VECTOR" || n.type === "LINE" ||
                  n.visible === false || (n.opacity !== undefined && n.opacity < 0.3);
-    if (!skip) {
-      const c = solidOf(n, key);
-      const area = (n.width || 0) * (n.height || 0);
-      if (c && area >= rootArea * 0.5 && area > bestArea) { bestArea = area; best = n; }
+    if (!skip && solidOf(n, key)) {
+      const w = n.width || 0, h = n.height || 0;
+      const fitsW = Math.abs(w - W) <= Math.max(2, W * 0.08);
+      const fitsH = Math.abs(h - H) <= Math.max(2, H * 0.08);
+      if (fitsW && fitsH) {
+        // prefer shallower nodes: the background sits above the content
+        const score = 1000 - depth;
+        if (score > bestScore) { bestScore = score; best = n; }
+      }
     }
-    if ("children" in n) for (const ch of n.children) walk(ch);
-  })(node);
+    if ("children" in n) for (const ch of n.children) walk(ch, depth + 1);
+  })(node, 0);
+
   return best;
 }
 
