@@ -111,6 +111,10 @@
   <span>Cluster merge <b id="dlVal">2</b></span>
   <input type="range" id="dl" min="1" max="4" value="2">
 </label>
+<label class="opt">
+  <span>Colour floor <b id="cfVal">0.10%</b></span>
+  <input type="range" id="cf" min="2" max="200" value="10">
+</label>
 
 <button id="run" disabled>Compare</button>
 <button id="draw" class="ghost" style="display:none">Annotate in Figma</button>
@@ -132,6 +136,7 @@ let lastPayload = null;
 
 $("th").oninput = e => $("thVal").textContent = e.target.value;
 $("dl").oninput = e => $("dlVal").textContent = e.target.value;
+$("cf").oninput = e => $("cfVal").textContent = (e.target.value / 100).toFixed(2) + "%";
 
 function log(html) { $("log").innerHTML = html; }
 
@@ -256,15 +261,39 @@ function locate(d, rgb, tol, expect) {
 // does not read as the label having moved. This is what turns "something inside
 // differs" into "the label sits 2pt low and is 6pt wider".
 function contentBounds(d, box, rgb, dpr, tol) {
-  const inset = Math.round(3 * dpr);
-  const x0 = box[0] + inset, y0 = box[1] + inset;
-  const x1 = box[2] - inset, y1 = box[3] - inset;
-  let a = 1e9, b = 1e9, c = -1, e = -1;
-  for (let y = y0; y < y1; y++) {
-    for (let x = x0; x < x1; x++) {
+  // Mask to the element's actual painted shape row by row, not to an inset
+  // rectangle. On a pill the page background shows through the rounded corners
+  // well inside any fixed inset, so a rectangular mask measures the button's
+  // interior rather than the label: 139 x 34 pt where the real label is 83 x 11.
+  const edge = Math.round(2 * dpr);
+  let a = 1e9, b = 1e9, c = -1, e = -1, ink = 0;
+  let sr = 0, sg = 0, sb = 0, core = 0;
+  let ar = 0, ag = 0, ab = 0;
+
+  for (let y = box[1]; y < box[3]; y++) {
+    // find where the element's own fill starts and ends on this row
+    let left = -1, right = -1;
+    for (let x = box[0]; x < box[2]; x++) {
+      const i = (y * d.width + x) * 4;
+      const s = Math.abs(d.data[i]-rgb[0]) + Math.abs(d.data[i+1]-rgb[1]) + Math.abs(d.data[i+2]-rgb[2]);
+      if (s < tol) { if (left < 0) left = x; right = x; }
+    }
+    if (left < 0 || right - left < edge * 2) continue;
+
+    // anything inside that span which is not the fill is content
+    for (let x = left + edge; x <= right - edge; x++) {
       const i = (y * d.width + x) * 4;
       const s = Math.abs(d.data[i]-rgb[0]) + Math.abs(d.data[i+1]-rgb[1]) + Math.abs(d.data[i+2]-rgb[2]);
       if (s > tol) {
+        ink++;
+        ar += d.data[i]; ag += d.data[i+1]; ab += d.data[i+2];
+        // Prefer pixels well clear of the fill, so antialiased glyph edges
+        // blending toward the background do not drag the measured colour. But a
+        // label whose colour is merely different, rather than much brighter, has
+        // few such pixels, so fall back to the whole run when the core is thin.
+        if (s > tol * 2.5) {
+          sr += d.data[i]; sg += d.data[i+1]; sb += d.data[i+2]; core++;
+        }
         if (x < a) a = x; if (x > c) c = x;
         if (y < b) b = y; if (y > e) e = y;
       }
@@ -275,10 +304,88 @@ function contentBounds(d, box, rgb, dpr, tol) {
   return {
     box: [a, b, c + 1, e + 1],
     w: (c + 1 - a) / dpr, h: (e + 1 - b) / dpr,
-    // offset of the content's centre from the element's centre, in points
     dx: ((a + c + 1) / 2 - cx) / dpr,
-    dy: ((b + e + 1) / 2 - cy) / dpr
+    dy: ((b + e + 1) / 2 - cy) / dpr,
+    // Share of the label's own box that is actually inked. Two fonts can occupy
+    // the same bounds and still differ, and coverage is what separates them: a
+    // heavier weight, a wider stroke or different letterforms all change how much
+    // of the box is filled even when its size does not move.
+    ink: ink / Math.max(1, (c + 1 - a) * (e + 1 - b)),
+    colour: core > ink * 0.15
+      ? [Math.round(sr/core), Math.round(sg/core), Math.round(sb/core)]
+      : (ink ? [Math.round(ar/ink), Math.round(ag/ink), Math.round(ab/ink)] : null)
   };
+}
+
+// Every colour the element actually uses, with how much of it there is.
+//
+// The fill and label rules above each look at one thing. A border, an icon, a
+// divider, a badge or a second text colour are all outside their reach, and a
+// design system has plenty of components where the interesting colour is 2% of
+// the area. This sweeps the whole element instead: mask to its painted shape,
+// bucket every colour inside, and keep anything that covers a meaningful share.
+function palette(d, box, pageBg, dpr, minShare) {
+  const buckets = {};
+  let total = 0;
+  const q = v => (v >> 4) << 4;   // 16 step quantisation
+
+  // Work row by row and take the span between the first and last pixel that is
+  // not the page background, then keep everything inside it. Skipping pixels that
+  // merely resemble the page misses a white label on a dark button entirely,
+  // which is exactly the colour most worth checking.
+  for (let y = box[1]; y < box[3]; y++) {
+    let left = -1, right = -1;
+    for (let x = box[0]; x < box[2]; x++) {
+      const i = (y * d.width + x) * 4;
+      if (Math.abs(d.data[i]-pageBg[0]) + Math.abs(d.data[i+1]-pageBg[1]) +
+          Math.abs(d.data[i+2]-pageBg[2]) >= 24) { if (left < 0) left = x; right = x; }
+    }
+    if (left < 0) continue;
+    for (let x = left; x <= right; x++) {
+      const i = (y * d.width + x) * 4;
+      const r = d.data[i], g = d.data[i+1], b = d.data[i+2];
+      const k = (q(r) << 16) | (q(g) << 8) | q(b);
+      if (!buckets[k]) buckets[k] = { r: 0, g: 0, b: 0, n: 0 };
+      const t = buckets[k];
+      t.r += r; t.g += g; t.b += b; t.n++;
+      total++;
+    }
+  }
+  if (!total) return [];
+
+  let list = Object.keys(buckets).map(k => {
+    const t = buckets[k];
+    return { rgb: [Math.round(t.r/t.n), Math.round(t.g/t.n), Math.round(t.b/t.n)],
+             n: t.n };
+  }).sort((a, b) => b.n - a.n);
+
+  // Merge buckets that are really the same colour split across a boundary, and
+  // absorb antialiased blends into whichever real colour they sit nearest.
+  const merged = [];
+  for (const c of list) {
+    const near = merged.find(m =>
+      Math.abs(m.rgb[0]-c.rgb[0]) + Math.abs(m.rgb[1]-c.rgb[1]) + Math.abs(m.rgb[2]-c.rgb[2]) < 40);
+    if (near) {
+      const tot = near.n + c.n;
+      near.rgb = [Math.round((near.rgb[0]*near.n + c.rgb[0]*c.n)/tot),
+                  Math.round((near.rgb[1]*near.n + c.rgb[1]*c.n)/tot),
+                  Math.round((near.rgb[2]*near.n + c.rgb[2]*c.n)/tot)];
+      near.n = tot;
+    } else {
+      merged.push({ rgb: c.rgb.slice(), n: c.n });
+    }
+  }
+  return merged.filter(c => c.n / total >= minShare)
+               .map(c => ({ rgb: c.rgb, share: c.n / total }))
+               .sort((a, b) => b.share - a.share);
+}
+
+function dist(p, q) {
+  return Math.abs(p[0]-q[0]) + Math.abs(p[1]-q[1]) + Math.abs(p[2]-q[2]);
+}
+
+function hexOf(rgb) {
+  return "#" + rgb.map(v => v.toString(16).padStart(2, "0")).join("");
 }
 
 // ------------------------------------------------------------------ diff
@@ -612,12 +719,93 @@ async function run(data) {
         spec: canonC.w.toFixed(1) + " x " + canonC.h.toFixed(1) + " pt",
         observed: shotC.w.toFixed(1) + " x " + shotC.h.toFixed(1) + " pt  (" +
                   (ddw >= 0 ? "+" : "") + ddw + " wide, " + (ddh >= 0 ? "+" : "") + ddh + " tall)",
-        evidence: "The label's own bounds differ. Text that occupies a different " +
-                  "area at the same nominal size means a different font, weight, " +
-                  "letter spacing, or point size.",
+        evidence: Math.abs(ddw) > canonC.w * 0.2
+          ? "The label is a very different width. At this magnitude the likelier " +
+            "cause is that the canonical is a different variant, or its label text " +
+            "differs from what is on screen, rather than a rendering fault. Check " +
+            "the variant before treating this as a defect."
+          : "The label's own bounds differ. Text occupying a different area at the " +
+            "same nominal size means a different font, weight, letter spacing, or " +
+            "point size.",
         bbox: null
       });
     }
+  }
+
+  // ---- full palette sweep --------------------------------------------------
+  const pageBgI = ((Math.max(0, inShot[1] - Math.round(6*dpr))) * A.width + inShot[0]) * 4;
+  const pageBg = [A.data[pageBgI], A.data[pageBgI+1], A.data[pageBgI+2]];
+  const floor = (+$("cf").value) / 10000;
+  const canonPal = palette(CAN, canonBox, pageBg, dpr, floor);
+  const shotPal = palette(A, inShot, pageBg, dpr, floor);
+
+  if (canonPal.length && shotPal.length) {
+    parts.push('<div class="note">palette at a ' + (floor*100).toFixed(2) +
+      '% floor: ' + canonPal.length + ' colours in the canonical, ' +
+      shotPal.length + ' in the capture' +
+      (floor <= 0.0005 ? '. At this floor antialiased blends along edges start ' +
+       'appearing as colours of their own.' : '') + '</div>');
+
+    const usedShot = new Set();
+    for (const c of canonPal) {
+      let best = null, bestD = 1e9;
+      shotPal.forEach((t, i) => {
+        if (usedShot.has(i)) return;
+        const dd = dist(c.rgb, t.rgb);
+        if (dd < bestD) { bestD = dd; best = i; }
+      });
+
+      if (best === null || bestD > 150) {
+        pixel.push({
+          id: "colour_missing_" + hexOf(c.rgb).slice(1),
+          property: "missing colour " + hexOf(c.rgb),
+          layer: "pixel", severity: "major",
+          spec: hexOf(c.rgb) + " covering " + (c.share*100).toFixed(1) + "% of the element",
+          observed: "no comparable colour in the capture",
+          evidence: "A colour the design uses does not appear on screen at all. " +
+                    "A border, icon or divider that was dropped, or a state that " +
+                    "did not render.",
+          bbox: null
+        });
+        continue;
+      }
+
+      usedShot.add(best);
+      const t = shotPal[best];
+      if (bestD > 10) {
+        const smallArea = c.share < 0.06;
+        pixel.push({
+          id: "colour_" + hexOf(c.rgb).slice(1),
+          property: (smallArea ? "detail colour" : "area colour") +
+                    " (" + (c.share*100).toFixed(1) + "% of the element)",
+          layer: "pixel", severity: bestD > 60 ? "major" : "minor",
+          spec: hexOf(c.rgb),
+          observed: hexOf(t.rgb) + "  (" + bestD + " of 765)",
+          evidence: bestD < 40
+            ? "Small shift across a consistent area. Typically a hardcoded hex " +
+              "rather than a bound variable."
+            : "Materially different colour. Check which token this should resolve to.",
+          bbox: null
+        });
+      }
+    }
+
+    shotPal.forEach((t, i) => {
+      if (usedShot.has(i)) return;
+      const nearest = canonPal.reduce((m, c) => Math.min(m, dist(c.rgb, t.rgb)), 1e9);
+      if (nearest > 150) {
+        pixel.push({
+          id: "colour_extra_" + hexOf(t.rgb).slice(1),
+          property: "unexpected colour " + hexOf(t.rgb),
+          layer: "pixel", severity: "minor",
+          spec: "not present in the design",
+          observed: hexOf(t.rgb) + " covering " + (t.share*100).toFixed(1) + "%",
+          evidence: "Something on screen uses a colour the component does not. " +
+                    "An overlay, a focus ring, or a state the canonical is not in.",
+          bbox: null
+        });
+      }
+    });
   }
 
   // Anything inside the element that no rule claimed is a content difference:
@@ -664,6 +852,21 @@ async function run(data) {
   }
 
   const all = tokenFindings.concat(pixel);
+
+  // Pixel perfect check: how many pixels differ at all, and by how much at worst.
+  // The threshold slider governs what counts as a finding; this reports the raw
+  // truth underneath it, which is the number that matters when the target is an
+  // exact match rather than a tolerable one.
+  let anyDiff = 0, maxDelta = 0;
+  for (let k = 0; k < D.delta.length; k++) {
+    if (D.delta[k] > 0) { anyDiff++; if (D.delta[k] > maxDelta) maxDelta = D.delta[k]; }
+  }
+  parts.push('<div class="note">exact match: ' +
+    (anyDiff === 0
+      ? '<b>identical</b>, every pixel matches'
+      : '<b>' + anyDiff + '</b> of ' + (w*h) + ' pixels differ (' +
+        (100*anyDiff/(w*h)).toFixed(3) + '%), worst delta ' + maxDelta + ' of 765') +
+    '</div>');
 
   parts.push('<div class="note">' + cs.length + ' clusters, ' + pct.toFixed(3) +
              '% changed, threshold ' + threshold +
