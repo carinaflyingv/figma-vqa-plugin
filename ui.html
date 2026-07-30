@@ -615,8 +615,45 @@ async function run(data) {
   // vertical_edge when it is thin and as area_fill when it is wide, depending on
   // how far the padding moved. What identifies it either way is that it runs the
   // full height of the element and there is a matching one at the far side.
+  // Measure padding as the gap between the element edge and its content, in both
+  // images. Inferring it from element width assumes both sides carry the same
+  // label, and a hug width button's width is a function of its text: compare a
+  // screenshot reading "Button text" against a canonical reading something else
+  // and the width always differs, for no reason anyone should act on.
+  let padFinding = false;
+  if (canonC && shotC && spec.paddingLeft > 0) {
+    const padCanonL = (canonC.box[0] - canonBox[0]) / dpr;
+    const padCanonR = (canonBox[2] - canonC.box[2]) / dpr;
+    const padShotL = (shotC.box[0] - inShot[0]) / dpr;
+    const padShotR = (inShot[2] - shotC.box[2]) / dpr;
+    const dL = padShotL - padCanonL, dR = padShotR - padCanonR;
+
+    if (Math.abs(dL) >= 1 || Math.abs(dR) >= 1) {
+      padFinding = true;
+      const both = Math.abs(dL - dR) < 1.5;
+      pixel.push({
+        id: "padding_x", property: "paddingHorizontal", layer: "pixel",
+        severity: Math.max(Math.abs(dL), Math.abs(dR)) >= 2 ? "major" : "minor",
+        spec: spec.paddingLeft + " pt" +
+              (spec.bound.paddingLeft ? "  (" + spec.bound.paddingLeft + ")" : "") +
+              ", measured " + padCanonL.toFixed(1) + " / " + padCanonR.toFixed(1),
+        observed: padShotL.toFixed(1) + " / " + padShotR.toFixed(1) + " pt  (" +
+                  (dL >= 0 ? "+" : "") + dL.toFixed(1) + " left, " +
+                  (dR >= 0 ? "+" : "") + dR.toFixed(1) + " right)",
+        evidence: both
+          ? "Both sides moved by the same amount, so this is padding rather than " +
+            "the label having shifted. Measured edge to content, so it does not " +
+            "depend on the label text matching."
+          : "The two sides moved by different amounts, which is an alignment or " +
+            "content offset rather than a symmetric padding change.",
+        bbox: toBox([inShot[0]-ox, inShot[1]-oy, inShot[2]-ox, inShot[3]-oy])
+      });
+      claim(cs.filter(c => (c.bbox[3]-c.bbox[1])/dpr > ch * 0.8));
+    }
+  }
+
   const edges = cs.filter(c => (c.bbox[3] - c.bbox[1]) / dpr > ch * 0.8);
-  if (edges.length >= 2 && Math.abs(sw - cw) > 1 && spec.paddingLeft > 0) {
+  if (!padFinding && edges.length >= 2 && Math.abs(sw - cw) > 1 && spec.paddingLeft > 0) {
     claim(edges);
     const b = [Math.min(edges[0].bbox[0], edges[1].bbox[0]),
                Math.min(edges[0].bbox[1], edges[1].bbox[1]),
@@ -735,6 +772,24 @@ async function run(data) {
   // ---- full palette sweep --------------------------------------------------
   const pageBgI = ((Math.max(0, inShot[1] - Math.round(6*dpr))) * A.width + inShot[0]) * 4;
   const pageBg = [A.data[pageBgI], A.data[pageBgI+1], A.data[pageBgI+2]];
+  // A hug width component sized to its text cannot be compared by width if the
+  // two labels are not the same string. Say so once, loudly, rather than emitting
+  // a padding finding, a size finding and a handful of antialiasing colours that
+  // all trace back to the same cause.
+  let labelMismatch = false;
+  if (canonC && shotC) {
+    const rel = Math.abs(shotC.w - canonC.w) / Math.max(1, canonC.w);
+    if (rel > 0.15) {
+      labelMismatch = true;
+      parts.push('<div class="bad">The canonical label is ' + canonC.w.toFixed(1) +
+        ' pt wide and the capture\'s is ' + shotC.w.toFixed(1) + ' pt. That is ' +
+        (rel*100).toFixed(0) + '% apart, which almost always means the two are not ' +
+        'showing the same text. On a hug width component every width based ' +
+        'comparison below is then meaningless. Select the variant whose label ' +
+        'matches the screenshot, or set the canonical\'s text to match.</div>');
+    }
+  }
+
   const floor = (+$("cf").value) / 10000;
   const canonPal = palette(CAN, canonBox, pageBg, dpr, floor);
   const shotPal = palette(A, inShot, pageBg, dpr, floor);
@@ -772,7 +827,11 @@ async function run(data) {
 
       usedShot.add(best);
       const t = shotPal[best];
-      if (bestD > 10) {
+      // With mismatched geometry the antialiased blends differ everywhere, and
+      // every one of them looks like a small colour shift. Only trust the large
+      // areas until the elements are actually comparable.
+      const minD = labelMismatch ? 40 : 10;
+      if (bestD > minD && !(labelMismatch && c.share < 0.06)) {
         const smallArea = c.share < 0.06;
         pixel.push({
           id: "colour_" + hexOf(c.rgb).slice(1),
