@@ -533,6 +533,9 @@ onmessage = async (e) => {
     try { await run(m); }
     catch (err) { log('<div class="bad">' + err.message + '</div>'); }
   }
+  if (m.type === "progress") {
+    $("alog").innerHTML = '<div class="note">' + m.text + '</div>';
+  }
   if (m.type === "audited") {
     const v = m.variables, cset = m.componentSet;
     const all = v.findings.concat(cset ? cset.findings : []);
@@ -558,6 +561,10 @@ onmessage = async (e) => {
     } else {
       out.push('<div class="note">No component set selected, so the size ramp ' +
                'was not checked.</div>');
+    }
+    if (v.truncated) {
+      out.push('<div class="bad">Stopped at ' + v.variableCount + ' variables. ' +
+        'The library is larger than the cap, so this is a partial audit.</div>');
     }
     out.push('<hr>');
 

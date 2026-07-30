@@ -331,33 +331,49 @@ function stripState(name) {
 // component behaviour toggles and none of the colour or spacing tokens. Walking
 // the alias graph from the components reaches the library ones, and has the
 // bonus of scoping the audit to tokens this component set actually uses.
-async function reachableVariables(seedNodes) {
-  const found = {}, queue = [];
+async function reachableVariables(seedNodes, onProgress) {
+  const MAX = 700;   // stop before a very large library becomes a hang
+  const BATCH = 40;  // resolve this many at once
+  const found = {}, requested = {};
+  let queue = [];
 
   function seedFrom(n) {
     const bv = n.boundVariables || {};
     for (const k of Object.keys(bv)) {
       const entry = bv[k];
       const list = Array.isArray(entry) ? entry : [entry];
-      for (const e of list) if (e && e.id) queue.push(e.id);
+      for (const e of list) if (e && e.id && !requested[e.id]) {
+        requested[e.id] = 1; queue.push(e.id);
+      }
     }
     if ("children" in n) for (const c of n.children) seedFrom(c);
   }
   for (const n of seedNodes) seedFrom(n);
 
+  // Each remote variable is a round trip. Resolving them one at a time through a
+  // few hundred alias hops takes minutes and looks like a hang. Batching turns
+  // that into seconds.
+  let truncated = false;
   while (queue.length) {
-    const id = queue.pop();
-    if (found[id]) continue;
-    let v = null;
-    try { v = await figma.variables.getVariableByIdAsync(id); } catch (e) { v = null; }
-    if (!v) continue;
-    found[id] = v;
-    for (const modeId of Object.keys(v.valuesByMode)) {
-      const val = v.valuesByMode[modeId];
-      if (val && val.type === "VARIABLE_ALIAS" && !found[val.id]) queue.push(val.id);
+    if (Object.keys(found).length >= MAX) { truncated = true; break; }
+    const slice = queue.splice(0, BATCH);
+    const got = await Promise.all(slice.map(id =>
+      figma.variables.getVariableByIdAsync(id).catch(() => null)));
+    for (const v of got) {
+      if (!v) continue;
+      found[v.id] = v;
+      for (const modeId of Object.keys(v.valuesByMode)) {
+        const val = v.valuesByMode[modeId];
+        if (val && val.type === "VARIABLE_ALIAS" && !requested[val.id]) {
+          requested[val.id] = 1; queue.push(val.id);
+        }
+      }
     }
+    if (onProgress) onProgress(Object.keys(found).length, queue.length);
   }
-  return Object.keys(found).map(k => found[k]);
+  const list = Object.keys(found).map(k => found[k]);
+  list.truncated = truncated;
+  return list;
 }
 
 async function auditVariables(seedNodes) {
@@ -366,8 +382,13 @@ async function auditVariables(seedNodes) {
 
   let vars = localVars;
   let sourceNote = "local variables only";
+  let truncated = false;
   if (seedNodes && seedNodes.length) {
-    const reached = await reachableVariables(seedNodes);
+    const reached = await reachableVariables(seedNodes, (done, left) => {
+      figma.ui.postMessage({ type: "progress",
+        text: "resolved " + done + " variables, " + left + " queued" });
+    });
+    truncated = !!reached.truncated;
     const seen = {};
     vars = [];
     for (const v of reached.concat(localVars)) {
@@ -384,13 +405,11 @@ async function auditVariables(seedNodes) {
   // assuming they appear in the local list
   const colById = {};
   for (const c of localCols) colById[c.id] = c;
-  for (const v of vars) {
-    if (colById[v.variableCollectionId]) continue;
-    try {
-      const c = await figma.variables.getVariableCollectionByIdAsync(v.variableCollectionId);
-      if (c) colById[c.id] = c;
-    } catch (e) { /* unreadable collection, skip */ }
-  }
+  const wanted = {};
+  for (const v of vars) if (!colById[v.variableCollectionId]) wanted[v.variableCollectionId] = 1;
+  const gotCols = await Promise.all(Object.keys(wanted).map(id =>
+    figma.variables.getVariableCollectionByIdAsync(id).catch(() => null)));
+  for (const c of gotCols) if (c) colById[c.id] = c;
   const cols = Object.keys(colById).map(k => colById[k]);
 
   const hexOf = c => {
@@ -518,7 +537,8 @@ async function auditVariables(seedNodes) {
     });
   }
 
-  return { findings: findings, variableCount: vars.length, sourceNote: sourceNote,
+  return { findings: findings, variableCount: vars.length,
+           truncated: truncated, sourceNote: sourceNote,
            collections: cols.map(c => ({ name: c.name, modes: c.modes.map(m => m.name) })) };
 }
 
