@@ -75,10 +75,10 @@ to the element. Compare at that exact size and an element that grew wider has it
 extra width fall outside the window, so the defect is invisible. First test run:
 a 6pt padding change reported 0.000% changed.
 
-**Align by the element's center, not its top left.** A component sits centerd in
+**Align by the element's center, not its top left.** A component sits centered in
 its container, so symmetric padding growth pushes both edges outward. Aligning by
 the left edge collapses that into a right edge change only, and the two-strips
-signature never appears. Left-edge alignment gave one cluster. Centre alignment
+signature never appears. Left-edge alignment gave one cluster. Center alignment
 gives two, one at each edge, which is the readable result.
 
 **Composite the export onto the background before comparing.** Figma node exports
@@ -94,7 +94,7 @@ aborts on a lot of area AND a large delta.
 
 Untested against a real device screenshot. Every result so far has zero rendering
 difference between the two sides, because both images came from the same renderer.
-iOS and Android rasterise text differently from Figma, so a correct component will
+iOS and Android rasterize text differently from Figma, so a correct component will
 differ along every glyph edge by some unknown amount. The first thing to run
 against a real build is a capture with no defects at all. Whatever that reports is
 the noise floor, and the threshold slider goes above it.

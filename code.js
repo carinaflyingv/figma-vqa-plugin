@@ -130,6 +130,92 @@ async function readSpec(node) {
   };
 }
 
+// Every solid paint in the component, keyed by hex, with the variable it is bound
+// to. Lets a color finding say "#494343, bg/fill/secondary/default" instead of
+// just reporting that a hex moved, which is the difference between a finding a
+// developer can fix and one they have to go hunting for.
+async function paintTokens(node) {
+  const out = {};
+  async function visit(n) {
+    for (const key of ["fills", "strokes"]) {
+      const list = n[key];
+      if (!Array.isArray(list)) continue;
+      const bv = (n.boundVariables && n.boundVariables[key]) || [];
+      for (let i = 0; i < list.length; i++) {
+        const p = list[i];
+        if (!p || p.type !== "SOLID" || p.visible === false) continue;
+        const h = hex(p.color);
+        let token = null;
+        if (bv[i] && bv[i].id) {
+          const v = await figma.variables.getVariableByIdAsync(bv[i].id).catch(() => null);
+          if (v) token = v.name;
+        }
+        if (!out[h] || (!out[h].token && token)) {
+          out[h] = { token: token, layer: n.name, prop: key === "fills" ? "fill" : "stroke" };
+        }
+      }
+    }
+    if ("children" in n) for (const c of n.children) await visit(c);
+  }
+  await visit(node);
+  return out;
+}
+
+// The component's typography, so a label finding can name what it should be
+// rather than only that it renders differently.
+function largestText(node) {
+  let best = null, area = 0;
+  (function walk(n) {
+    if (n.type === "TEXT" && n.visible !== false) {
+      const a = (n.width || 0) * (n.height || 0);
+      if (a > area) { area = a; best = n; }
+    }
+    if ("children" in n) for (const c of n.children) walk(c);
+  })(node);
+  return best;
+}
+
+async function typeSpec(node) {
+  const t = largestText(node);
+  if (!t) return null;
+  const mixed = figma.mixed;
+  const fn = t.fontName !== mixed ? t.fontName : null;
+  let styleName = null;
+  if (t.textStyleId && t.textStyleId !== mixed) {
+    const st = await figma.getStyleByIdAsync(t.textStyleId).catch(() => null);
+    if (st) styleName = st.name;
+  }
+  const bv = t.boundVariables || {};
+  async function bound(k) {
+    const e = bv[k];
+    const ref = Array.isArray(e) ? e[0] : e;
+    if (!ref || !ref.id) return null;
+    const v = await figma.variables.getVariableByIdAsync(ref.id).catch(() => null);
+    return v ? v.name : null;
+  }
+  const lh = t.lineHeight !== mixed && t.lineHeight ? t.lineHeight : null;
+  const ls = t.letterSpacing !== mixed && t.letterSpacing ? t.letterSpacing : null;
+  return {
+    layer: t.name,
+    family: fn ? fn.family : null,
+    weight: fn ? fn.style : null,
+    size: t.fontSize !== mixed ? t.fontSize : null,
+    lineHeight: lh ? (lh.unit === "AUTO" ? "auto"
+                     : Math.round(lh.value * 10) / 10 + (lh.unit === "PERCENT" ? "%" : "")) : null,
+    letterSpacing: ls ? Math.round(ls.value * 100) / 100 + (ls.unit === "PERCENT" ? "%" : "") : null,
+    styleName: styleName,
+    sizeToken: await bound("fontSize"),
+    familyToken: await bound("fontFamily"),
+    weightToken: await bound("fontStyle"),
+    colorToken: await bound("fills"),
+    color: (function () {
+      if (!Array.isArray(t.fills)) return null;
+      for (const f of t.fills) if (f.type === "SOLID" && f.visible !== false) return hex(f.color);
+      return null;
+    })()
+  };
+}
+
 // ---------------------------------------------------------------- selection
 function solidOf(node, key) {
   const list = node[key];
@@ -221,6 +307,8 @@ async function collect(chosen) {
   const size = await img.getSizeAsync();
   const device = matchDevice(size.width, size.height);
   const spec = await readSpec(comp);
+  spec.type = await typeSpec(comp);
+  spec.paints = await paintTokens(comp);
 
   // Prefer the device table, since it also gives the logical size for the resize
   // step. But a crop, a node export pasted back, or an unlisted device matches
@@ -320,17 +408,48 @@ async function annotate(payload) {
     }
     if (bx === null) { bx = x - (i + 1) * 26; by = y; }
     placed.push([bx, by]);
+    let badgeAt = [bx, by];
 
-    if (Math.abs(bx - x) > 24 || Math.abs(by - y) > 24) {
+    // A finding about type or color needs to point at the thing it describes.
+    // Place its badge clear of the element and run a leader with an arrowhead
+    // into the middle of the region, so the reader's eye lands on the label or
+    // the swatch rather than on a box that could be anything.
+    const wantsPointer = f.point || Math.abs(bx - x) > 24 || Math.abs(by - y) > 24;
+    if (wantsPointer) {
+      const tx = f.point ? x + w / 2 : x;
+      const ty = f.point ? y + h / 2 : y;
+      if (f.point) {
+        // lift the badge out of the element so the arrow has somewhere to travel
+        bx = x + w / 2 + (i % 2 ? 46 : -46);
+        by = y - 26 - Math.floor(i / 2) * 18;
+        placed[placed.length - 1] = [bx, by];
+        badgeAt = [bx, by];
+      }
+      const ddx = tx - bx, ddy = ty - by;
+      const len = Math.sqrt(ddx * ddx + ddy * ddy);
+      const ang = Math.atan2(ddy, ddx);
+      const stop = Math.max(0, len - 9);          // leave room for the head
+
       const line = figma.createLine();
       line.name = "leader " + (i + 1);
-      line.x = bx; line.y = by;
-      const ddx = x - bx, ddy = y - by;
-      line.resize(Math.sqrt(ddx * ddx + ddy * ddy), 0);
-      line.rotation = -Math.atan2(ddy, ddx) * 180 / Math.PI;
+      line.x = bx + Math.cos(ang) * 11;
+      line.y = by + Math.sin(ang) * 11;
+      line.resize(Math.max(1, stop - 11), 0);
+      line.rotation = -ang * 180 / Math.PI;
       line.strokes = [{ type: "SOLID", color: MAGENTA }];
       line.strokeWeight = 1;
       figma.currentPage.appendChild(line); marks.push(line);
+
+      const head = figma.createPolygon();
+      head.name = "arrow " + (i + 1);
+      head.pointCount = 3;
+      head.resize(8, 9);
+      head.fills = [{ type: "SOLID", color: MAGENTA }];
+      head.strokes = [];
+      head.x = bx + Math.cos(ang) * stop - 4;
+      head.y = by + Math.sin(ang) * stop - 4.5;
+      head.rotation = -(ang * 180 / Math.PI + 90);
+      figma.currentPage.appendChild(head); marks.push(head);
     }
 
     const badge = figma.createEllipse();

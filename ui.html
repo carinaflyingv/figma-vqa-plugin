@@ -339,7 +339,7 @@ function contentBounds(d, box, rgb, dpr, tol) {
 function palette(d, box, pageBg, dpr, minShare) {
   const buckets = {};
   let total = 0;
-  const q = v => (v >> 4) << 4;   // 16 step quantisation
+  const q = v => (v >> 4) << 4;   // 16 step quantization
 
   // Work row by row and take the span between the first and last pixel that is
   // not the page background, then keep everything inside it. Skipping pixels that
@@ -392,8 +392,55 @@ function palette(d, box, pageBg, dpr, minShare) {
                .sort((a, b) => b.share - a.share);
 }
 
+// Where a given color actually appears inside the element. A color finding with
+// no location can only be read, not acted on: "something is 13 off" is far less
+// useful than an arrow resting on the thing that is 13 off.
+function colorRegion(d, box, rgb, tol) {
+  let x0 = 1e9, y0 = 1e9, x1 = -1, y1 = -1, n = 0;
+  for (let y = box[1]; y < box[3]; y++) {
+    for (let x = box[0]; x < box[2]; x++) {
+      const i = (y * d.width + x) * 4;
+      if (Math.abs(d.data[i]-rgb[0]) + Math.abs(d.data[i+1]-rgb[1]) +
+          Math.abs(d.data[i+2]-rgb[2]) < tol) {
+        n++;
+        if (x < x0) x0 = x; if (x > x1) x1 = x;
+        if (y < y0) y0 = y; if (y > y1) y1 = y;
+      }
+    }
+  }
+  return n > 8 ? [x0, y0, x1 + 1, y1 + 1] : null;
+}
+
 function dist(p, q) {
   return Math.abs(p[0]-q[0]) + Math.abs(p[1]-q[1]) + Math.abs(p[2]-q[2]);
+}
+
+function typeLine(t) {
+  if (!t) return null;
+  const bits = [];
+  if (t.family) bits.push(t.family);
+  if (t.weight) bits.push(t.weight);
+  if (t.size) bits.push(t.size + " pt");
+  if (t.lineHeight) bits.push("line " + t.lineHeight);
+  if (t.letterSpacing && t.letterSpacing !== "0") bits.push("tracking " + t.letterSpacing);
+  let out = bits.join(" \u00b7 ");
+  if (t.styleName) out = t.styleName + "  (" + out + ")";
+  const toks = [];
+  if (t.familyToken) toks.push(t.familyToken);
+  if (t.weightToken) toks.push(t.weightToken);
+  if (t.sizeToken) toks.push(t.sizeToken);
+  if (toks.length) out += "  \u2190 " + toks.join(", ");
+  return out;
+}
+
+function tokenFor(paints, hexStr) {
+  if (!paints) return null;
+  let best = null, bestD = 1e9;
+  for (const k of Object.keys(paints)) {
+    const d = dist(hexRgb(k), hexRgb(hexStr));
+    if (d < bestD) { bestD = d; best = paints[k]; }
+  }
+  return bestD <= 24 && best ? best : null;
 }
 
 function hexOf(rgb) {
@@ -575,7 +622,7 @@ async function run(data) {
 
   const CAN = padded(B, M, bg);
 
-  // Align by the element's CENTRE, not its top left. A component sits centerd in
+  // Align by the element's CENTER, not its top left. A component sits centered in
   // its container, so symmetric padding growth pushes both edges outward. Aligning
   // by the left edge collapses that into a right edge change only, and the
   // two-strips-at-both-edges signature never appears.
@@ -799,20 +846,25 @@ async function run(data) {
     const ddy = Math.round((shotC.dy - canonC.dy) * 10) / 10;
     const ddw = Math.round((shotC.w - canonC.w) * 10) / 10;
     const ddh = Math.round((shotC.h - canonC.h) * 10) / 10;
+    const labelBox = [Math.round(shotC.box[0]/dpr*10)/10, Math.round(shotC.box[1]/dpr*10)/10,
+                      Math.round(shotC.box[2]/dpr*10)/10, Math.round(shotC.box[3]/dpr*10)/10];
+
+    // Whichever of these fires, the label's clusters are accounted for. Claiming
+    // per rule left them unclaimed when only one fired, and the catch-all then
+    // reported the same pixels a second time.
+    labelExplained = true;
 
     if (Math.abs(ddy) >= 0.7 || Math.abs(ddx) >= 0.7) {
       pixel.push({
         id: "content_offset", property: "label position", layer: "pixel",
         severity: Math.max(Math.abs(ddx), Math.abs(ddy)) >= 2 ? "major" : "minor",
-        spec: "centerd in the element",
+        spec: "centered in the element",
         observed: (ddy ? (ddy > 0 ? ddy + " pt low" : (-ddy) + " pt high") : "") +
                   (ddx && ddy ? ", " : "") +
                   (ddx ? (ddx > 0 ? ddx + " pt right" : (-ddx) + " pt left") : ""),
-        evidence: "content center measured against the element center in both " +
-                  "images, so a padding change does not affect this number",
-        // shotC is in screenshot pixels already, so convert straight to points
-        bbox: [Math.round(shotC.box[0]/dpr*10)/10, Math.round(shotC.box[1]/dpr*10)/10,
-               Math.round(shotC.box[2]/dpr*10)/10, Math.round(shotC.box[3]/dpr*10)/10]
+        evidence: "Content center measured against the element center in both " +
+                  "images, so a padding change does not affect this number.",
+        bbox: labelBox, point: true
       });
     }
 
@@ -820,7 +872,8 @@ async function run(data) {
       pixel.push({
         id: "content_size", property: "label size", layer: "pixel",
         severity: "major",
-        spec: canonC.w.toFixed(1) + " x " + canonC.h.toFixed(1) + " pt",
+        spec: canonC.w.toFixed(1) + " x " + canonC.h.toFixed(1) + " pt" +
+              (typeLine(spec.type) ? "\n" + typeLine(spec.type) : ""),
         observed: shotC.w.toFixed(1) + " x " + shotC.h.toFixed(1) + " pt  (" +
                   (ddw >= 0 ? "+" : "") + ddw + " wide, " + (ddh >= 0 ? "+" : "") + ddh + " tall)",
         evidence: Math.abs(ddw) > canonC.w * 0.2
@@ -831,7 +884,50 @@ async function run(data) {
           : "The label's own bounds differ. Text occupying a different area at the " +
             "same nominal size means a different font, weight, letter spacing, or " +
             "point size.",
-        bbox: null
+        bbox: labelBox, point: true
+      });
+    }
+
+    // Label color. The palette sweep looks at the element as a whole, so without
+    // this a label in the wrong color is only ever a percentage rather than a
+    // named token.
+    if (canonC.color && shotC.color) {
+      const dc = dist(canonC.color, shotC.color);
+      if (dc > 10) {
+        pixel.push({
+          id: "label_color", property: "label color", layer: "pixel",
+          severity: dc > 60 ? "major" : "minor",
+          spec: hexOf(canonC.color) +
+                (spec.type && spec.type.colorToken ? "  (" + spec.type.colorToken + ")" : ""),
+          observed: hexOf(shotC.color) + "  (" + dc + " of 765)",
+          evidence: dc < 40
+            ? "A small difference across the whole label is the hardcoded hex " +
+              "signature: a value typed in rather than bound to a text color token."
+            : "The label is a materially different color from the canonical.",
+          bbox: labelBox, point: true
+        });
+      }
+    }
+
+    // Same bounds, different ink. The case a size check cannot see: a different
+    // typeface whose advance width happens to match, or the same face at a
+    // different weight.
+    const dInk = shotC.ink - canonC.ink;
+    const rel = canonC.ink > 0 ? dInk / canonC.ink : 0;
+    if (Math.abs(rel) >= 0.08) {
+      pixel.push({
+        id: "label_rendering", property: "label rendering", layer: "pixel",
+        severity: Math.abs(rel) >= 0.2 ? "major" : "minor",
+        spec: (canonC.ink * 100).toFixed(1) + "% of the label box inked" +
+              (typeLine(spec.type) ? "\n" + typeLine(spec.type) : ""),
+        observed: (shotC.ink * 100).toFixed(1) + "%  (" + (rel > 0 ? "+" : "") +
+                  (rel * 100).toFixed(0) + "% relative)",
+        evidence: rel > 0
+          ? "More of the label box is filled than the canonical. Heavier weight, " +
+            "wider strokes, or a denser typeface."
+          : "Less of the label box is filled than the canonical. Lighter weight, " +
+            "thinner strokes, or a more open typeface.",
+        bbox: labelBox, point: true
       });
     }
   }
@@ -864,7 +960,9 @@ async function run(data) {
           id: "color_missing_" + hexOf(c.rgb).slice(1),
           property: "missing color " + hexOf(c.rgb),
           layer: "pixel", severity: "major",
-          spec: hexOf(c.rgb) + " covering " + (c.share*100).toFixed(1) + "% of the element",
+          spec: hexOf(c.rgb) + (function(){ const t = tokenFor(spec.paints, hexOf(c.rgb));
+                return t ? "  (" + (t.token || t.prop + " on " + t.layer) + ")" : ""; })() +
+                " covering " + (c.share*100).toFixed(1) + "% of the element",
           observed: "no comparable color in the capture",
           evidence: "A color the design uses does not appear on screen at all. " +
                     "A border, icon or divider that was dropped, or a state that " +
@@ -887,13 +985,19 @@ async function run(data) {
           property: (smallArea ? "detail color" : "area color") +
                     " (" + (c.share*100).toFixed(1) + "% of the element)",
           layer: "pixel", severity: bestD > 60 ? "major" : "minor",
-          spec: hexOf(c.rgb),
+          spec: hexOf(c.rgb) + (function(){ const k = tokenFor(spec.paints, hexOf(c.rgb));
+                return k ? "  (" + (k.token || k.prop + " on " + k.layer) + ")" : ""; })(),
           observed: hexOf(t.rgb) + "  (" + bestD + " of 765)",
           evidence: bestD < 40
             ? "Small shift across a consistent area. Typically a hardcoded hex " +
               "rather than a bound variable."
             : "Materially different color. Check which token this should resolve to.",
-          bbox: null
+          bbox: (function () {
+            const r = colorRegion(A, inShot, t.rgb, 60);
+            return r ? [Math.round(r[0]/dpr*10)/10, Math.round(r[1]/dpr*10)/10,
+                        Math.round(r[2]/dpr*10)/10, Math.round(r[3]/dpr*10)/10] : null;
+          })(),
+          point: true
         });
       }
     }
@@ -910,7 +1014,12 @@ async function run(data) {
           observed: hexOf(t.rgb) + " covering " + (t.share*100).toFixed(1) + "%",
           evidence: "Something on screen uses a color the component does not. " +
                     "An overlay, a focus ring, or a state the canonical is not in.",
-          bbox: null
+          bbox: (function () {
+            const r = colorRegion(A, inShot, t.rgb, 60);
+            return r ? [Math.round(r[0]/dpr*10)/10, Math.round(r[1]/dpr*10)/10,
+                        Math.round(r[2]/dpr*10)/10, Math.round(r[3]/dpr*10)/10] : null;
+          })(),
+          point: true
         });
       }
     });
@@ -1020,7 +1129,7 @@ async function run(data) {
   all.forEach((f, i) => {
     parts.push('<div class="card"><div class="h">' + (i+1) + '. ' + f.property + '</div>' +
       '<div class="m">' + f.layer + ' &middot; ' + f.severity + '</div>' +
-      '<div class="kv"><span>spec</span><span>' + f.spec + '</span></div>' +
+      '<div class="kv"><span>spec</span><span>' + String(f.spec).replace(/\n/g, "<br>") + '</span></div>' +
       '<div class="kv obs"><span>observed</span><span>' + f.observed + '</span></div>' +
       '<div class="ev">' + f.evidence + '</div></div>');
   });
