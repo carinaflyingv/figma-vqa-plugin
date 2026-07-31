@@ -129,8 +129,8 @@ numbers.</div>
   <input type="range" id="dl" min="1" max="4" value="2">
 </label>
 <label class="opt">
-  <span>Color floor <b id="cfVal">0.10%</b><span class="info" tabindex="0">i<span class="tip">The smallest share of the element a color must cover before the palette sweep reports on it.<br><br>At <b>0.10%</b> a 1pt divider registers. Below about 0.05% the antialiased blends along every edge start appearing as colors of their own, which is noise rather than signal.<br><br>Raise it if small details are creating chatter, lower it if something real is being missed.</span></span></span>
-  <input type="range" id="cf" min="2" max="200" value="10">
+  <span>Color floor <b id="cfVal">0.25%</b><span class="info" tabindex="0">i<span class="tip">The smallest share of the element a color must cover before the palette sweep reports on it.<br><br>At <b>0.10%</b> a 1pt divider registers. Below about 0.05% the antialiased blends along every edge start appearing as colors of their own, which is noise rather than signal.<br><br>Raise it if small details are creating chatter, lower it if something real is being missed.</span></span></span>
+  <input type="range" id="cf" min="2" max="200" value="25">
 </label>
 
 <button id="run" disabled>Compare</button>
@@ -935,11 +935,17 @@ async function run(data) {
   // ---- full palette sweep --------------------------------------------------
   const pageBgI = ((Math.max(0, inShot[1] - Math.round(6*dpr))) * A.width + inShot[0]) * 4;
   const pageBg = [A.data[pageBgI], A.data[pageBgI+1], A.data[pageBgI+2]];
+  const geometryOff = labelMismatch || Math.abs(sw - cw) > 2 || Math.abs(sh - ch) > 2;
   const floor = (+$("cf").value) / 10000;
   const canonPal = palette(CAN, canonBox, pageBg, dpr, floor);
   const shotPal = palette(A, inShot, pageBg, dpr, floor);
 
   if (canonPal.length && shotPal.length) {
+    if (geometryOff) {
+      parts.push('<div class="note">The two elements are not the same size, so ' +
+        'color findings under 6% of the area are held back. Their edges land in ' +
+        'different places and every antialiased blend reads as a small shift.</div>');
+    }
     parts.push('<div class="note">palette at a ' + (floor*100).toFixed(2) +
       '% floor: ' + canonPal.length + ' colors in the canonical, ' +
       shotPal.length + ' in the capture' +
@@ -977,8 +983,14 @@ async function run(data) {
       // With mismatched geometry the antialiased blends differ everywhere, and
       // every one of them looks like a small color shift. Only trust the large
       // areas until the elements are actually comparable.
-      const minD = labelMismatch ? 40 : 10;
-      if (bestD > minD && !(labelMismatch && c.share < 0.06)) {
+      // When the two elements are not the same size, every antialiased edge
+      // lands somewhere different and each blend reads as a small color shift.
+      // Those are artifacts of the geometry, not color defects, so hold back the
+      // small-area ones until the elements are actually comparable. Raising the
+      // floor would hide them too, but it would also hide real details on a
+      // component that lines up fine.
+      const minD = geometryOff ? 40 : 10;
+      if (bestD > minD && !(geometryOff && c.share < 0.06)) {
         const smallArea = c.share < 0.06;
         pixel.push({
           id: "color_" + hexOf(c.rgb).slice(1),

@@ -382,6 +382,15 @@ async function annotate(payload) {
   const ky = shot.height / payload.logicalShot[1];
 
   const marks = [], placed = [];
+
+  // Findings that point rather than box get their badges fanned along a row above
+  // the element, evenly spaced and wider than the element itself. Stacking them in
+  // two columns put eight arrows through the same few points and made the canvas
+  // unreadable, which defeats the purpose of pointing at anything.
+  const pointers = F.filter(f => f.point && f.bbox);
+  const fanIndex = {};
+  pointers.forEach((f, k) => { fanIndex[F.indexOf(f)] = k; });
+  const fanCount = pointers.length;
   F.forEach(function (f, i) {
     if (!f.bbox) return;
     const x = shot.x + f.bbox[0] * kx, y = shot.y + f.bbox[1] * ky;
@@ -419,9 +428,13 @@ async function annotate(payload) {
       const tx = f.point ? x + w / 2 : x;
       const ty = f.point ? y + h / 2 : y;
       if (f.point) {
-        // lift the badge out of the element so the arrow has somewhere to travel
-        bx = x + w / 2 + (i % 2 ? 46 : -46);
-        by = y - 26 - Math.floor(i / 2) * 18;
+        // fan across a span wider than the element, well clear of its top edge
+        const k = fanIndex[i] || 0;
+        const elW = shot.width * 0.0 + w;
+        const span = Math.max(elW + 80, fanCount * 34);
+        const step = fanCount > 1 ? span / (fanCount - 1) : 0;
+        bx = x + w / 2 - span / 2 + step * k;
+        by = y - 52;
         placed[placed.length - 1] = [bx, by];
         badgeAt = [bx, by];
       }
