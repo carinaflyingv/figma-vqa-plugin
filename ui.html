@@ -27,6 +27,10 @@
   label.opt { display: flex; justify-content: space-between; align-items: center;
               font-size: 11px; color: var(--soft); margin: 6px 0; }
   input[type=range] { width: 160px; }
+  input[type=text] {
+    font: inherit; font-size: 11px; padding: 5px 7px; border-radius: 6px;
+    border: 1px solid var(--rule); background: #fff; color: var(--ink);
+  }
   select, input[type=number] {
     font: inherit; font-size: 11px; padding: 4px 6px; border-radius: 6px;
     border: 1px solid var(--rule); background: #fff; color: var(--ink);
@@ -99,6 +103,24 @@ numbers.</div>
 
 <div class="row"><div class="slot empty" id="slotShot">no screenshot selected</div></div>
 <div class="row"><div class="slot empty" id="slotComp">no component selected</div></div>
+
+<label class="opt" style="align-items:flex-start">
+  <span>Resolved font
+    <span class="info" tabindex="0">i<span class="tip">
+    What the <b>app</b> actually rendered with, not what it asked for. Read it off
+    the debug footer, or paste it.<br><br>
+    Compared against the typeface on the Figma component. This is the only way to
+    catch <b>font fallback</b>: the app requests Wells Fargo Sans, that font did
+    not ship in the build, the system quietly substitutes San Francisco, and the
+    button looks completely fine. No pixel measurement can see that. A string
+    comparison catches it the first time it renders.<br><br>
+    Accepts anything readable: <em>Wells Fargo Sans SemiBold 17/24</em>,
+    <em>WellsFargoSans-SemiBold 17pt</em>, or just the family name.
+    </span></span>
+  </span>
+  <input type="text" id="font" placeholder="e.g. Wells Fargo Sans SemiBold 17"
+         style="width:230px">
+</label>
 
 <label class="opt">
   <span>Device</span>
@@ -413,6 +435,133 @@ function colorRegion(d, box, rgb, tol) {
 
 function dist(p, q) {
   return Math.abs(p[0]-q[0]) + Math.abs(p[1]-q[1]) + Math.abs(p[2]-q[2]);
+}
+
+// Measure a rendered label's own properties, independent of how wide the string
+// happens to be.
+//
+// Width is a weak signal. It moves when the point size changes, when the string
+// changes, when tracking changes, and when the typeface changes, so it cannot
+// tell you which. These are the measures that separate those causes:
+//
+//   cap height   scales with point size and almost nothing else
+//   stroke       scales with weight, and with size only proportionally
+//   ratio        stroke over cap height, which is weight independent of size
+//   density      ink over the label box, sensitive to both weight and letterform
+//
+// A label at the wrong point size moves cap height and stroke together and leaves
+// the ratio alone. A label at the wrong weight moves stroke and ratio and leaves
+// cap height alone. That distinction is the thing a width comparison cannot make.
+function labelMetrics(d, box, bgRgb, tol) {
+  const W = d.width;
+  const rows = [];
+  let inkTotal = 0;
+
+  for (let y = box[1]; y < box[3]; y++) {
+    let count = 0;
+    const runs = [];
+    let run = 0;
+    for (let x = box[0]; x < box[2]; x++) {
+      const i = (y * W + x) * 4;
+      const isInk = Math.abs(d.data[i]-bgRgb[0]) + Math.abs(d.data[i+1]-bgRgb[1]) +
+                    Math.abs(d.data[i+2]-bgRgb[2]) > tol;
+      if (isInk) { count++; run++; }
+      else { if (run) runs.push(run); run = 0; }
+    }
+    if (run) runs.push(run);
+    inkTotal += count;
+    rows.push({ y: y, count: count, runs: runs });
+  }
+
+  const inked = rows.filter(r => r.count > 0);
+  if (inked.length < 3) return null;
+
+  // Cap height: the band of rows carrying most of the ink. Ignores descenders and
+  // the odd tall glyph, so it tracks point size rather than which letters appear.
+  const peak = Math.max.apply(null, inked.map(r => r.count));
+  const body = inked.filter(r => r.count >= peak * 0.25);
+  const capH = body.length;
+
+  // Stroke: the most common horizontal run length across the body rows. A run is
+  // one crossing of a stem, so its mode is the stem width.
+  const hist = {};
+  for (const r of body) for (const len of r.runs) if (len <= 40) hist[len] = (hist[len] || 0) + 1;
+  let stroke = 0, bestN = 0;
+  for (const k of Object.keys(hist)) if (hist[k] > bestN) { bestN = hist[k]; stroke = +k; }
+
+  return {
+    capHeight: capH,
+    stroke: stroke,
+    ratio: capH ? stroke / capH : 0,
+    density: inkTotal / Math.max(1, (box[2]-box[0]) * (box[3]-box[1]))
+  };
+}
+
+// Read a resolved font string the way a person would write it.
+//
+// "Wells Fargo Sans SemiBold 17/24", "WellsFargoSans-SemiBold 17pt",
+// ".SFUI-Semibold 17.0" and "Roboto Medium" all have to parse, because whatever
+// the app prints is whatever the app prints and it will not be a schema.
+function parseFont(str) {
+  if (!str || !str.trim()) return null;
+  let t = str.trim();
+
+  // size, and line height if it is written as size/leading
+  let size = null, leading = null;
+  const sz = t.match(/(\d+(?:\.\d+)?)\s*(?:\/\s*(\d+(?:\.\d+)?))?\s*(?:pt|px|sp)?\s*$/i);
+  if (sz) { size = parseFloat(sz[1]); if (sz[2]) leading = parseFloat(sz[2]);
+            t = t.slice(0, sz.index).trim(); }
+
+  // PostScript style: Family-Weight
+  let family = t, weight = null;
+  if (t.indexOf("-") > 0 && t.indexOf(" ") < 0) {
+    const bits = t.split("-");
+    weight = bits.pop(); family = bits.join("-");
+  } else {
+    const WEIGHTS = ["ultralight", "extralight", "thin", "light", "book", "regular",
+                     "normal", "medium", "semibold", "demibold", "bold", "heavy",
+                     "black", "extrabold", "ultrabold", "italic", "oblique"];
+    const words = t.split(/\s+/);
+    const tail = [];
+    while (words.length > 1) {
+      const w = words[words.length - 1].toLowerCase().replace(/[^a-z]/g, "");
+      if (WEIGHTS.indexOf(w) >= 0) tail.unshift(words.pop()); else break;
+    }
+    family = words.join(" ");
+    if (tail.length) weight = tail.join(" ");
+  }
+  return { family: family, weight: weight, size: size, leading: leading,
+           raw: str.trim() };
+}
+
+// Compare loosely enough that punctuation and casing do not cause false alarms,
+// strictly enough that a different family still fails.
+function sameFamily(a, b) {
+  // Strip punctuation and case, then collapse the several names Apple's system
+  // font goes by. The collapse has to happen after the prefix check, not before,
+  // or "SF Pro" becomes "system" and stops matching "SF Pro Text".
+  const norm = x => (x || "").toLowerCase().replace(/[^a-z]/g, "");
+  const sys  = x => /^(sfui|sfpro|sfprotext|sfprodisplay|system|systemfont|applesystemuifont)/.test(x)
+                    ? "system" : x;
+  const A = norm(a), B = norm(b);
+  if (!A || !B) return null;
+  if (A === B) return true;
+  // One being a prefix of the other covers optical-size siblings: "SF Pro"
+  // against "SF Pro Text", "Inter" against "Inter Display". Those are the same
+  // typeface at a different optical size, not a substitution.
+  if (A.indexOf(B) === 0 || B.indexOf(A) === 0) return true;
+  return sys(A) === sys(B);
+}
+
+function sameWeight(a, b) {
+  const norm = x => (x || "").toLowerCase().replace(/[^a-z]/g, "")
+                     .replace("demibold", "semibold")
+                     .replace("ultrabold", "extrabold")
+                     .replace("book", "regular")
+                     .replace("normal", "regular");
+  const A = norm(a), B = norm(b);
+  if (!A || !B) return null;
+  return A === B;
 }
 
 function typeLine(t) {
@@ -876,14 +1025,12 @@ async function run(data) {
               (typeLine(spec.type) ? "\n" + typeLine(spec.type) : ""),
         observed: shotC.w.toFixed(1) + " x " + shotC.h.toFixed(1) + " pt  (" +
                   (ddw >= 0 ? "+" : "") + ddw + " wide, " + (ddh >= 0 ? "+" : "") + ddh + " tall)",
-        evidence: Math.abs(ddw) > canonC.w * 0.2
-          ? "The label is a very different width. At this magnitude the likelier " +
-            "cause is that the canonical is a different variant, or its label text " +
-            "differs from what is on screen, rather than a rendering fault. Check " +
-            "the variant before treating this as a defect."
-          : "The label's own bounds differ. Text occupying a different area at the " +
-            "same nominal size means a different font, weight, letter spacing, or " +
-            "point size.",
+        evidence: "Width alone is weak evidence: it moves with point size, with " +
+                  "tracking, with the typeface, and with the string itself. See " +
+                  "the label type finding for which of those it actually is. If " +
+                  "there is no type finding, the glyphs measure the same and only " +
+                  "the extent differs, which usually means different text or " +
+                  "different tracking.",
         bbox: labelBox, point: true
       });
     }
@@ -909,24 +1056,139 @@ async function run(data) {
       }
     }
 
-    // Same bounds, different ink. The case a size check cannot see: a different
-    // typeface whose advance width happens to match, or the same face at a
-    // different weight.
+    // Measure the type itself rather than inferring from how wide the string is.
+    const canonM = labelMetrics(CAN, canonC.box, rgb, 90);
+    const shotM  = labelMetrics(A, shotC.box, rgb, 90);
+
+    if (canonM && shotM && canonM.capHeight && canonM.stroke) {
+      const dCap    = (shotM.capHeight - canonM.capHeight) / dpr;
+      const relCap  = (shotM.capHeight - canonM.capHeight) / canonM.capHeight;
+      const relStr  = (shotM.stroke - canonM.stroke) / canonM.stroke;
+      const relRat  = canonM.ratio ? (shotM.ratio - canonM.ratio) / canonM.ratio : 0;
+
+      const sizeOff   = Math.abs(relCap) >= 0.06;
+      const weightOff = Math.abs(relRat) >= 0.12;
+
+      if (sizeOff || weightOff) {
+        // cap height is about 70% of point size for most text faces, which is
+        // close enough to name a likely size rather than only a direction
+        const specPt = spec.type && spec.type.size ? spec.type.size : null;
+        const impliedPt = specPt ? specPt * (shotM.capHeight / canonM.capHeight) : null;
+
+        let cause, detail;
+        if (sizeOff && !weightOff) {
+          cause = "point size";
+          detail = "Cap height moved " + (relCap*100).toFixed(0) + "% while the " +
+                   "stroke to cap ratio held steady. That is the signature of the " +
+                   "same typeface set at a different size, not a different font.";
+        } else if (weightOff && !sizeOff) {
+          cause = "weight";
+          detail = "Cap height is unchanged but the stroke is " +
+                   (relStr > 0 ? "thicker" : "thinner") + " by " +
+                   Math.abs(relStr*100).toFixed(0) + "%. Same size, different " +
+                   "weight, or a different typeface at the same nominal size.";
+        } else {
+          cause = "size and weight";
+          detail = "Cap height moved " + (relCap*100).toFixed(0) + "% and the " +
+                   "stroke to cap ratio moved " + (relRat*100).toFixed(0) + "%, but " +
+                   "the letterform proportions match. Same typeface, set at a " +
+                   "different size and weight.";
+        }
+
+        pixel.push({
+          id: "label_type", property: "label type (" + cause + ")",
+          layer: "pixel",
+          severity: (Math.abs(relCap) >= 0.12 || Math.abs(relRat) >= 0.25) ? "major" : "minor",
+          spec: (typeLine(spec.type) || "as designed") +
+                "\ncap " + (canonM.capHeight/dpr).toFixed(1) + " pt \u00b7 stroke " +
+                (canonM.stroke/dpr).toFixed(2) + " pt \u00b7 stroke/cap " +
+                canonM.ratio.toFixed(3),
+          observed: "cap " + (shotM.capHeight/dpr).toFixed(1) + " pt \u00b7 stroke " +
+                    (shotM.stroke/dpr).toFixed(2) + " pt \u00b7 stroke/cap " +
+                    shotM.ratio.toFixed(3) +
+                    (impliedPt && sizeOff
+                      ? "\nimplies about " + impliedPt.toFixed(1) + " pt against a " +
+                        "specified " + specPt + " pt"
+                      : ""),
+          evidence: detail + " Measured from the rendered glyphs, so it does not " +
+                    "depend on the two labels carrying the same string.",
+          bbox: labelBox, point: true
+        });
+      }
+    }
+
+    // ---- resolved font, if the app told us what it used --------------------
+    const declared = parseFont($("font").value);
+    if (declared && spec.type) {
+      const famOk = sameFamily(spec.type.family, declared.family);
+      const wgtOk = sameWeight(spec.type.weight, declared.weight);
+      const szOk  = (spec.type.size && declared.size)
+                    ? Math.abs(spec.type.size - declared.size) < 0.6 : null;
+
+      if (famOk === false) {
+        pixel.push({
+          id: "font_family", property: "font family", layer: "token",
+          severity: "major",
+          spec: spec.type.family +
+                (spec.type.familyToken ? "  (" + spec.type.familyToken + ")" : ""),
+          observed: declared.family + "   \u2190 what the app actually rendered",
+          evidence: "The app resolved a different family than the component " +
+                    "specifies. The usual cause is font fallback: the requested " +
+                    "family did not ship in this build and the system substituted " +
+                    "its default. Nothing about the rendering looks broken when " +
+                    "this happens, which is why it survives review.",
+          bbox: labelBox, point: true
+        });
+      } else if (wgtOk === false) {
+        pixel.push({
+          id: "font_weight", property: "font weight", layer: "token",
+          severity: "major",
+          spec: (spec.type.weight || "as designed") +
+                (spec.type.weightToken ? "  (" + spec.type.weightToken + ")" : ""),
+          observed: declared.weight + "   \u2190 what the app actually rendered",
+          evidence: "Right family, wrong weight. Often the requested weight is " +
+                    "missing from the bundled family and the system picked the " +
+                    "nearest available one.",
+          bbox: labelBox, point: true
+        });
+      }
+
+      if (szOk === false) {
+        pixel.push({
+          id: "font_size", property: "font size", layer: "token",
+          severity: "major",
+          spec: spec.type.size + " pt" +
+                (spec.type.sizeToken ? "  (" + spec.type.sizeToken + ")" : ""),
+          observed: declared.size + " pt   \u2190 what the app actually rendered",
+          evidence: "Reported by the app rather than measured, so this is exact.",
+          bbox: labelBox, point: true
+        });
+      }
+
+      if (famOk && wgtOk !== false && szOk !== false) {
+        parts.push('<div class="note">resolved font matches: ' + declared.raw +
+                   '</div>');
+      }
+    }
+
+    // Ink density as a backstop, for the case where cap height and stroke both
+    // match and the letterforms themselves still differ.
     const dInk = shotC.ink - canonC.ink;
-    const rel = canonC.ink > 0 ? dInk / canonC.ink : 0;
-    if (Math.abs(rel) >= 0.08) {
+    const relInk = canonC.ink > 0 ? dInk / canonC.ink : 0;
+    const typeNamed = pixel.some(f => f.id === "label_type");
+    if (!typeNamed && Math.abs(relInk) >= 0.08) {
       pixel.push({
         id: "label_rendering", property: "label rendering", layer: "pixel",
-        severity: Math.abs(rel) >= 0.2 ? "major" : "minor",
+        severity: Math.abs(relInk) >= 0.2 ? "major" : "minor",
         spec: (canonC.ink * 100).toFixed(1) + "% of the label box inked" +
               (typeLine(spec.type) ? "\n" + typeLine(spec.type) : ""),
-        observed: (shotC.ink * 100).toFixed(1) + "%  (" + (rel > 0 ? "+" : "") +
-                  (rel * 100).toFixed(0) + "% relative)",
-        evidence: rel > 0
-          ? "More of the label box is filled than the canonical. Heavier weight, " +
-            "wider strokes, or a denser typeface."
-          : "Less of the label box is filled than the canonical. Lighter weight, " +
-            "thinner strokes, or a more open typeface.",
+        observed: (shotC.ink * 100).toFixed(1) + "%  (" + (relInk > 0 ? "+" : "") +
+                  (relInk * 100).toFixed(0) + "% relative)",
+        evidence: "Cap height and stroke both match, so this is not a size or " +
+                  "weight difference. Either the text differs, the tracking " +
+                  "differs, or the typeface does. This cannot tell which: " +
+                  "distinguishing one sans face from another reliably needs the " +
+                  "font name, not the pixels.",
         bbox: labelBox, point: true
       });
     }
@@ -1170,6 +1432,14 @@ function chosenDevice() {
   const p = v.split("x").map(Number);
   return { lw: p[0], lh: p[1], dpr: p[2], name: $("dev").selectedOptions[0].text.split("\u00b7")[0].trim() };
 }
+
+try {
+  const saved = sessionStorage.getItem("vqaFont");
+  if (saved) $("font").value = saved;
+} catch (e) {}
+$("font").oninput = () => {
+  try { sessionStorage.setItem("vqaFont", $("font").value); } catch (e) {}
+};
 
 $("dev").onchange = () => {
   $("dprRow").style.display = $("dev").value === "custom" ? "flex" : "none";
