@@ -7,7 +7,13 @@
 //
 // Nothing leaves Figma. No network, no files, no external service.
 
+// Stamped so a stale copy is visible at a glance rather than inferred from
+// behaviour. If the number in the panel is not the number you installed, Figma is
+// loading a different folder than the one you edited.
+const VERSION = "v41";
+
 figma.showUI(__html__, { width: 460, height: 760, themeColors: true });
+figma.ui.postMessage({ type: "version", version: VERSION });
 
 // pixel dims -> [name, logicalW, logicalH, dpr]
 const DEVICES = [
@@ -290,19 +296,22 @@ function classifySelection() {
 
 function resolveDevice(size, chosen) {
   if (chosen && chosen.responsive) {
-    // A web page has no canonical height, so derive it from the capture's own
-    // aspect at the stated width rather than asserting one.
-    const lw = chosen.lw;
+    // The capture keeps its own width; what is checked is that the width falls
+    // inside the range the chosen design frame covers. A web page has no canonical
+    // height either, so that is taken from the capture as well.
     const dpr = chosen.dpr;
+    const lw = Math.round(size.width / dpr);
     const lh = Math.round(size.height / dpr);
-    const impliedDpr = size.width / lw;
+    const inRange = lw >= chosen.rangeLo && lw <= chosen.rangeHi;
     return { name: chosen.name, lw: lw, lh: lh, dpr: dpr,
              responsive: true,
-             mismatch: Math.abs(impliedDpr - dpr) > 0.06
-               ? "The capture is " + size.width + " px wide. At " + dpr + "x that " +
-                 "is " + (size.width / dpr).toFixed(0) + " logical px, not " + lw +
-                 ". Either the breakpoint or the scale is wrong."
-               : null };
+             rangeLo: chosen.rangeLo, rangeHi: chosen.rangeHi,
+             mismatch: inRange ? null
+               : "The capture is " + lw + " logical px wide, outside the " +
+                 chosen.rangeLo + "\u2013" +
+                 (chosen.rangeHi >= 9999 ? "\u221e" : chosen.rangeHi) +
+                 " range. Either the wrong range is selected, the scale is wrong, " +
+                 "or this capture belongs to the other design frame." };
   }
   if (chosen && chosen.custom) {
     return { name: "custom @" + chosen.dpr + "x", dpr: chosen.dpr,

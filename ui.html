@@ -95,7 +95,7 @@
 </head>
 <body>
 
-<h1>Prisme VQA</h1>
+<h1>Prisme VQA <span style="font-weight:400; font-size:10px; color:var(--soft)">v41</span></h1>
 
 <div class="sub">Select a pasted screenshot and the component variant it should
 match. Compares the rendered result against the design and reports what differs, in
@@ -150,20 +150,15 @@ numbers.</div>
   </span>
   <span style="display:flex; gap:6px">
     <select id="bp">
-      <option value="390">390 &middot; small phone</option>
-      <option value="430">430 &middot; large phone</option>
-      <option value="480">480 &middot; phone landscape</option>
-      <option value="640">640 &middot; sm</option>
-      <option value="768" selected>768 &middot; md, tablet</option>
-      <option value="1024">1024 &middot; lg, tablet landscape</option>
-      <option value="1280">1280 &middot; xl, laptop</option>
-      <option value="1440">1440 &middot; desktop</option>
-      <option value="1920">1920 &middot; wide</option>
-      <option value="custom">custom&hellip;</option>
+      <option value="320-767" selected>Small – Medium &middot; 320–767px</option>
+      <option value="768-9999">Large – X_Large &middot; 768px and up</option>
+      <option value="custom">custom range&hellip;</option>
     </select>
-    <input type="number" id="bpCustom" min="240" max="3840" step="1" value="768"
-           style="width:66px; display:none" placeholder="px">
-    <select id="bpScale" style="width:64px">
+    <input type="number" id="bpMin" min="240" max="3840" step="1" value="320"
+           style="width:58px; display:none" placeholder="min">
+    <input type="number" id="bpMax" min="240" max="9999" step="1" value="767"
+           style="width:58px; display:none" placeholder="max">
+        <select id="bpScale" style="width:64px">
       <option value="1" selected>1x</option>
       <option value="2">2x</option>
     </select>
@@ -226,9 +221,9 @@ numbers.</div>
 const $ = id => document.getElementById(id);
 let lastPayload = null;
 
-$("th").oninput = e => $("thVal").textContent = e.target.value;
-$("dl").oninput = e => $("dlVal").textContent = e.target.value;
-$("cf").oninput = e => $("cfVal").textContent = (e.target.value / 100).toFixed(2) + "%";
+$("th").oninput = e => { $("thVal").textContent = e.target.value; save(); };
+$("dl").oninput = e => { $("dlVal").textContent = e.target.value; save(); };
+$("cf").oninput = e => { $("cfVal").textContent = (e.target.value / 100).toFixed(2) + "%"; save(); };
 
 function log(html) { $("log").innerHTML = html; }
 
@@ -1574,37 +1569,67 @@ function chosenDevice() {
   const v = $("dev").value;
   if (v === "auto") return null;
   if (v === "responsive") {
-    // On the web the logical width is the breakpoint and the height is whatever
-    // the capture happens to be, since a page scrolls. So only the width is
-    // asserted, and the height is derived from it.
-    const w = $("bp").value === "custom"
-      ? (parseInt($("bpCustom").value, 10) || 768)
-      : parseInt($("bp").value, 10);
+    // A breakpoint is a range, not a width. Fusion has two: Small to Medium at
+    // 320 to 767, and Large to X_Large at 768 and up. Within a range the component
+    // is fluid, so its width is whatever the container gives it. What matters is
+    // that the capture falls inside the range the design frame describes, not that
+    // it equals some specific number.
+    let lo, hi, label;
+    if ($("bp").value === "custom") {
+      lo = parseInt($("bpMin").value, 10) || 320;
+      hi = parseInt($("bpMax").value, 10) || 767;
+      label = lo + "\u2013" + hi + "px";
+    } else {
+      const parts = $("bp").value.split("-");
+      lo = parseInt(parts[0], 10); hi = parseInt(parts[1], 10);
+      label = $("bp").selectedOptions[0].text.split("\u00b7")[0].trim();
+    }
     const dpr = parseFloat($("bpScale").value) || 1;
-    return { responsive: true, lw: w, dpr: dpr,
-             name: w + "px @" + dpr + "x" };
+    return { responsive: true, rangeLo: lo, rangeHi: hi, dpr: dpr, name: label };
   }
   if (v === "custom") return { custom: true, dpr: parseFloat($("dpr").value) || 3 };
   const p = v.split("x").map(Number);
   return { lw: p[0], lh: p[1], dpr: p[2], name: $("dev").selectedOptions[0].text.split("\u00b7")[0].trim() };
 }
 
+// Remember the whole setup between runs. Losing the device selection back to
+// Auto detect mid-session is how a responsive comparison silently turns into a
+// native one and aborts.
+const REMEMBER = ["font", "dev", "bp", "bpMin", "bpMax", "bpScale", "th", "dl", "cf"];
+function save() {
+  try {
+    const st = {};
+    REMEMBER.forEach(id => { if ($(id)) st[id] = $(id).value; });
+    sessionStorage.setItem("vqaState", JSON.stringify(st));
+  } catch (e) {}
+}
 try {
-  const saved = sessionStorage.getItem("vqaFont");
-  if (saved) $("font").value = saved;
+  const st = JSON.parse(sessionStorage.getItem("vqaState") || "{}");
+  REMEMBER.forEach(id => { if ($(id) && st[id] != null) $(id).value = st[id]; });
+  $("thVal").textContent = $("th").value;
+  $("dlVal").textContent = $("dl").value;
+  $("cfVal").textContent = (+$("cf").value / 100).toFixed(2) + "%";
+  $("dprRow").style.display = $("dev").value === "custom" ? "flex" : "none";
+  $("bpRow").style.display  = $("dev").value === "responsive" ? "flex" : "none";
+  const custom = $("bp").value === "custom";
+  $("bpMin").style.display = custom ? "inline-block" : "none";
+  $("bpMax").style.display = custom ? "inline-block" : "none";
 } catch (e) {}
-$("font").oninput = () => {
-  try { sessionStorage.setItem("vqaFont", $("font").value); } catch (e) {}
-};
+REMEMBER.forEach(id => { if ($(id)) $(id).addEventListener("change", save); });
+$("font").oninput = save;
 
 $("dev").onchange = () => {
   const v = $("dev").value;
   $("dprRow").style.display = v === "custom" ? "flex" : "none";
   $("bpRow").style.display  = v === "responsive" ? "flex" : "none";
+  save();
 };
 
 $("bp").onchange = () => {
-  $("bpCustom").style.display = $("bp").value === "custom" ? "inline-block" : "none";
+  const custom = $("bp").value === "custom";
+  $("bpMin").style.display = custom ? "inline-block" : "none";
+  $("bpMax").style.display = custom ? "inline-block" : "none";
+  save();
 };
 
 $("resize").onclick = () => {
