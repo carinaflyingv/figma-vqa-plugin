@@ -763,6 +763,12 @@ async function run(data) {
   }
 
   parts.push('<div class="note">' + (data.deviceNote || '') + '</div>');
+  if (data.responsiveFallback) {
+    parts.push('<div class="note">code.js did not return a responsive flag, so it ' +
+      'is an older file than this panel. Comparing in responsive mode anyway, ' +
+      'since the panel knows what was selected. Worth replacing code.js when ' +
+      'convenient.</div>');
+  }
   parts.push('<div class="note">comparing against <b>' + spec.name + '</b>, located ' +
              'by its ' + (spec.locateVia || "fill") + ' ' + spec.fill +
              (spec.paintedOn ? ' (read from the inner layer "' + spec.paintedOn + '")' : '') +
@@ -805,7 +811,12 @@ async function run(data) {
   // is whatever width the container gives it. Aborting on size there would refuse
   // to compare almost anything, so instead the difference is reported as a finding
   // and the comparison continues on the region the two have in common.
-  const isResponsive = !!(data.device && data.device.responsive);
+  // Read the dropdown directly rather than trusting the flag to survive the round
+  // trip through code.js. The two files are separate and can drift apart, and when
+  // they do the symptom is that a setting the panel offers appears to do nothing.
+  // The panel already knows what was chosen, so it should not have to be told.
+  const isResponsive = $("dev").value === "responsive" ||
+                       !!(data.device && data.device.responsive);
   const dW = sw - cw, dH = sh - ch;
   let sizeDiff = false;
 
@@ -1684,11 +1695,8 @@ onmessage = async (e) => {
     // A responsive request that comes back without the flag means code.js did not
     // understand it, which means the two files are from different versions.
     if (m.device && $("dev").value === "responsive" && !m.device.responsive) {
-      log('<div class="bad"><b>code.js does not understand Responsive web.</b> ' +
-          'The panel sent a breakpoint range and got back a device object without ' +
-          'the responsive flag, so code.js is from an older version than ui.html. ' +
-          'Replace <b>both</b> files, then remove and re-import the plugin.</div>');
-      return;
+      // Note it, but carry on: the panel knows the mode without being told.
+      m.responsiveFallback = true;
     }
     try { await run(m); }
     catch (err) { log('<div class="bad">' + err.message + '</div>'); }
