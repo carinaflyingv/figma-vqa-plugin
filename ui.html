@@ -650,14 +650,14 @@ function hexOf(rgb) {
 }
 
 // ------------------------------------------------------------------ diff
-function diff(A, B, ox, oy, w, h, threshold) {
+function diff(A, B, ax, ay, bx, by, w, h, threshold) {
   const mask = new Uint8Array(w * h);
   const delta = new Int32Array(w * h);
   let changed = 0;
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
-      const ia = ((y + oy) * A.width + (x + ox)) * 4;
-      const ib = (y * B.width + x) * 4;
+      const ia = ((y + ay) * A.width + (x + ax)) * 4;
+      const ib = ((y + by) * B.width + (x + bx)) * 4;
       const s = Math.abs(A.data[ia]-B.data[ib])
               + Math.abs(A.data[ia+1]-B.data[ib+1])
               + Math.abs(A.data[ia+2]-B.data[ib+2]);
@@ -851,7 +851,17 @@ async function run(data) {
   // an element that grew wider has its extra width fall outside the window, so
   // the defect is invisible. Padding the canonical with the capture's background
   // gives the growth somewhere to show.
-  const M = Math.round(20 * dpr);
+  // Margin exists so an element that grew has somewhere to differ. It has to come
+  // out of the capture, and a Storybook render is the component edge to edge with
+  // nothing around it, so on the web there is often none available. Take what
+  // there is rather than refusing: with no margin the comparison still works, it
+  // simply cannot see growth beyond the frame, which it says below.
+  const availL = inShot[0];
+  const availT = inShot[1];
+  const availR = A.width  - inShot[2];
+  const availB = A.height - inShot[3];
+  const M = Math.max(0, Math.min(Math.round(20 * dpr),
+                                 availL, availT, availR, availB));
   const bgx = Math.max(0, inShot[0] - Math.round(M / 2));
   const bgy = Math.min(A.height - 1, inShot[1] + Math.round((inShot[3] - inShot[1]) / 2));
   const bi = (bgy * A.width + bgx) * 4;
@@ -875,15 +885,25 @@ async function run(data) {
   const oy = growsDown
     ? Math.round(inShot[1] - (M + inCanon[1]))
     : Math.round(shotCy - canCy);
-  const w = Math.min(CAN.width, A.width - Math.max(0, ox));
-  const h = Math.min(CAN.height, A.height - Math.max(0, oy));
-  if (ox < 0 || oy < 0 || w < 8 || h < 8) {
-    log(parts.join("") + '<div class="bad">The component sits too close to the edge ' +
-        'of the screenshot to compare with a margin. Recapture with the component ' +
-        'further from the edge.</div>');
+  // Clamp rather than refuse. A negative offset means the canonical would start
+  // outside the capture, so crop both to the region they actually share.
+  const sx = Math.max(0, ox), sy = Math.max(0, oy);
+  const cx0 = Math.max(0, -ox), cy0 = Math.max(0, -oy);
+  const w = Math.min(CAN.width - cx0, A.width - sx);
+  const h = Math.min(CAN.height - cy0, A.height - sy);
+  if (w < 8 || h < 8) {
+    log(parts.join("") + '<div class="bad">The component and the design export ' +
+        'barely overlap, so there is nothing meaningful to compare. Check that the ' +
+        'right variant is selected.</div>');
     return;
   }
-  const D = diff(A, CAN, ox, oy, w, h, threshold);
+  if (M < Math.round(6 * dpr)) {
+    parts.push('<div class="note">The capture has little or no margin around the ' +
+      'component, which is normal for an isolated render. Anything that extends ' +
+      'past the edge of the frame cannot be seen, so growth outward will be ' +
+      'under-reported.</div>');
+  }
+  const D = diff(A, CAN, sx, sy, cx0, cy0, w, h, threshold);
   const grown = dilate(D.mask, w, h, dl);
   const cs = cluster(D.mask, grown, w, h, 12, D.delta);
   const pct = 100 * D.changed / (w * h);
@@ -933,7 +953,10 @@ async function run(data) {
   // markers without knowing anything about the crop.
   const pixel = [];
   const P = (v, off) => Math.round((v + off) / dpr * 10) / 10;
-  const toBox = b => [P(b[0], ox), P(b[1], oy), P(b[2], ox), P(b[3], oy)];
+  // Cluster coordinates are relative to the compared frame, which now starts at
+  // (sx, sy) in the capture rather than at (ox, oy). Using the old offsets here
+  // would place every marker wrong by the amount the frames were cropped.
+  const toBox = b => [P(b[0], sx), P(b[1], sy), P(b[2], sx), P(b[3], sy)];
   // Every cluster must be either claimed by a rule or reported as unexplained.
   // Silently dropping the leftovers makes a tool that found five differences look
   // like a tool that found one, which is the worst possible way to be wrong.
@@ -1002,7 +1025,7 @@ async function run(data) {
           "Both figures are measured element edge to visible ink, so they are " +
           "directly comparable to each other even though neither equals Figma's " +
           "declared padding.",
-        bbox: toBox([inShot[0]-ox, inShot[1]-oy, inShot[2]-ox, inShot[3]-oy]),
+        bbox: toBox([inShot[0]-sx, inShot[1]-sy, inShot[2]-sx, inShot[3]-sy]),
         // Redline dimensions, in screenshot logical points. A box around the
         // element says something is wrong with the spacing. These say which gap,
         // by how much, and against what. That is the difference between a finding
@@ -1435,7 +1458,10 @@ async function run(data) {
       const mx = (c.bbox[0]+c.bbox[2])/2, my = (c.bbox[1]+c.bbox[3])/2;
       // cluster coordinates are in the compared frame, which is the padded
       // canonical, so canonC needs no offset and shotC needs the capture's
-      return inBox(mx, my, canonC.box) || inBox(mx + ox, my + oy, shotC.box);
+      // canonC.box is in the padded canonical's frame, shotC.box is in the
+      // capture's, and the cluster sits in the compared frame between them.
+      return inBox(mx + cx0, my + cy0, canonC.box) ||
+             inBox(mx + sx, my + sy, shotC.box);
     }));
   }
 
@@ -1447,8 +1473,8 @@ async function run(data) {
   let leftover = cs.filter(c => !claimed.has(c));
   if (leftover.length && pixel.length) {
     leftover = leftover.filter(c => {
-      const cx = (c.bbox[0] + c.bbox[2]) / 2 + ox;
-      const cy = (c.bbox[1] + c.bbox[3]) / 2 + oy;
+      const cx = (c.bbox[0] + c.bbox[2]) / 2 + sx;
+      const cy = (c.bbox[1] + c.bbox[3]) / 2 + sy;
       const pad = 4 * dpr;
       const insideElement = cx >= inShot[0] - pad && cx <= inShot[2] + pad &&
                             cy >= inShot[1] - pad && cy <= inShot[3] + pad;
