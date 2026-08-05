@@ -134,8 +134,42 @@ numbers.</div>
     <option value="360x780x3">Galaxy S24 &middot; 360x780 @3x</option>
     <option value="744x1133x2">iPad mini &middot; 744x1133 @2x</option>
     <option value="custom">Custom scale…</option>
+    <option value="responsive">Responsive web…</option>
   </select>
 </label>
+<label class="opt" id="bpRow" style="display:none">
+  <span>Breakpoint
+    <span class="info" tabindex="0">i<span class="tip">
+    Which width the capture was taken at. Auto detect cannot work on the web,
+    since a browser window can be any width, so this has to be told.<br><br>
+    It has to match the Figma frame you are comparing against. Compare a 1024
+    capture against a 390 design and every finding will be about the breakpoint
+    rather than the build.<br><br>
+    <b>Scale</b> is 1 for an ordinary screenshot, 2 on a retina display.
+    </span></span>
+  </span>
+  <span style="display:flex; gap:6px">
+    <select id="bp">
+      <option value="390">390 &middot; small phone</option>
+      <option value="430">430 &middot; large phone</option>
+      <option value="480">480 &middot; phone landscape</option>
+      <option value="640">640 &middot; sm</option>
+      <option value="768" selected>768 &middot; md, tablet</option>
+      <option value="1024">1024 &middot; lg, tablet landscape</option>
+      <option value="1280">1280 &middot; xl, laptop</option>
+      <option value="1440">1440 &middot; desktop</option>
+      <option value="1920">1920 &middot; wide</option>
+      <option value="custom">custom&hellip;</option>
+    </select>
+    <input type="number" id="bpCustom" min="240" max="3840" step="1" value="768"
+           style="width:66px; display:none" placeholder="px">
+    <select id="bpScale" style="width:64px">
+      <option value="1" selected>1x</option>
+      <option value="2">2x</option>
+    </select>
+  </span>
+</label>
+
 <label class="opt" id="dprRow" style="display:none">
   <span>Scale factor</span>
   <input type="number" id="dpr" min="0.5" max="6" step="0.05" value="3" style="width:70px">
@@ -156,7 +190,23 @@ numbers.</div>
 </label>
 
 <button id="run" disabled>Compare</button>
+
+<div id="groupRow" style="display:none">
+  <label class="opt" style="align-items:flex-start">
+    <span>Annotate
+      <span class="info" tabindex="0">i<span class="tip">
+      Which findings to draw on the canvas. Every finding stays in the list below
+      whatever you pick here.<br><br>
+      <b>Separate board per group</b> lays out one copy of the screenshot for each
+      kind of finding, so spacing, type and color each get a clean board instead of
+      eight arrows converging on one small component.
+      </span></span>
+    </span>
+    <select id="groupSel"></select>
+  </label>
+</div>
 <button id="draw" class="ghost" style="display:none">Annotate in Figma</button>
+<button id="renum" class="ghost">Renumber after deleting cards</button>
 <div id="log"></div>
 
 
@@ -856,6 +906,7 @@ async function run(data) {
   // and the width always differs, for no reason anyone should act on.
   let padFinding = false;
   let labelExplained = false;
+  let labelExtent = null;
   if (canonC && shotC && spec.paddingLeft > 0) {
     const padCanonL = (canonC.box[0] - canonBox[0]) / dpr;
     const padCanonR = (canonBox[2] - canonC.box[2]) / dpr;
@@ -1017,23 +1068,13 @@ async function run(data) {
       });
     }
 
-    if (Math.abs(ddw) >= 1 || Math.abs(ddh) >= 1) {
-      pixel.push({
-        id: "content_size", property: "label size", layer: "pixel",
-        severity: "major",
-        spec: canonC.w.toFixed(1) + " x " + canonC.h.toFixed(1) + " pt" +
-              (typeLine(spec.type) ? "\n" + typeLine(spec.type) : ""),
-        observed: shotC.w.toFixed(1) + " x " + shotC.h.toFixed(1) + " pt  (" +
-                  (ddw >= 0 ? "+" : "") + ddw + " wide, " + (ddh >= 0 ? "+" : "") + ddh + " tall)",
-        evidence: "Width alone is weak evidence: it moves with point size, with " +
-                  "tracking, with the typeface, and with the string itself. See " +
-                  "the label type finding for which of those it actually is. If " +
-                  "there is no type finding, the glyphs measure the same and only " +
-                  "the extent differs, which usually means different text or " +
-                  "different tracking.",
-        bbox: labelBox, point: true
-      });
-    }
+    // Label extent is reported only when the type measurement finds nothing, and
+    // only when the difference is large. On its own it says almost nothing: the
+    // label's width moves with the string, with tracking, and with point size, so
+    // firing on it invites people to chase a difference that is usually just
+    // different text. Size and weight are measured properly by the type check
+    // below, from cap height and stroke thickness.
+    labelExtent = { ddw: ddw, ddh: ddh, box: labelBox };
 
     // Label color. The palette sweep looks at the element as a whole, so without
     // this a label in the wrong color is only ever a percentage rather than a
@@ -1080,7 +1121,7 @@ async function run(data) {
           cause = "point size";
           detail = "Cap height moved " + (relCap*100).toFixed(0) + "% while the " +
                    "stroke to cap ratio held steady. That is the signature of the " +
-                   "same typeface set at a different size, not a different font.";
+                   "same type set at a different point size.";
         } else if (weightOff && !sizeOff) {
           cause = "weight";
           detail = "Cap height is unchanged but the stroke is " +
@@ -1091,14 +1132,13 @@ async function run(data) {
           cause = "size and weight";
           detail = "Cap height moved " + (relCap*100).toFixed(0) + "% and the " +
                    "stroke to cap ratio moved " + (relRat*100).toFixed(0) + "%, but " +
-                   "the letterform proportions match. Same typeface, set at a " +
-                   "different size and weight.";
+                   "so both are off. Check the size and the weight together.";
         }
 
         pixel.push({
           id: "label_type", property: "label type (" + cause + ")",
           layer: "pixel",
-          severity: (Math.abs(relCap) >= 0.12 || Math.abs(relRat) >= 0.25) ? "major" : "minor",
+          severity: (Math.abs(relCap) >= 0.20 || Math.abs(relRat) >= 0.50) ? "major" : "minor",
           spec: (typeLine(spec.type) || "as designed") +
                 "\ncap " + (canonM.capHeight/dpr).toFixed(1) + " pt \u00b7 stroke " +
                 (canonM.stroke/dpr).toFixed(2) + " pt \u00b7 stroke/cap " +
@@ -1171,12 +1211,29 @@ async function run(data) {
       }
     }
 
+    // Extent, only if nothing better explained the label and the gap is wide.
+    if (!pixel.some(f => f.id === "label_type") && labelExtent &&
+        Math.abs(labelExtent.ddw) >= Math.max(4, canonC.w * 0.12)) {
+      pixel.push({
+        id: "content_size", property: "label extent", layer: "pixel",
+        severity: "minor",
+        spec: canonC.w.toFixed(1) + " x " + canonC.h.toFixed(1) + " pt",
+        observed: shotC.w.toFixed(1) + " x " + shotC.h.toFixed(1) + " pt  (" +
+                  (labelExtent.ddw >= 0 ? "+" : "") + labelExtent.ddw + " wide, " +
+                  (labelExtent.ddh >= 0 ? "+" : "") + labelExtent.ddh + " tall)",
+        evidence: "The label occupies a different width, but its cap height and " +
+                  "stroke thickness both match, so the type is set correctly. " +
+                  "This is different text, different tracking, or a truncation.",
+        bbox: labelExtent.box, point: true
+      });
+    }
+
     // Ink density as a backstop, for the case where cap height and stroke both
     // match and the letterforms themselves still differ.
     const dInk = shotC.ink - canonC.ink;
     const relInk = canonC.ink > 0 ? dInk / canonC.ink : 0;
     const typeNamed = pixel.some(f => f.id === "label_type");
-    if (!typeNamed && Math.abs(relInk) >= 0.08) {
+    if (!typeNamed && Math.abs(relInk) >= 0.25) {
       pixel.push({
         id: "label_rendering", property: "label rendering", layer: "pixel",
         severity: Math.abs(relInk) >= 0.2 ? "major" : "minor",
@@ -1184,11 +1241,10 @@ async function run(data) {
               (typeLine(spec.type) ? "\n" + typeLine(spec.type) : ""),
         observed: (shotC.ink * 100).toFixed(1) + "%  (" + (relInk > 0 ? "+" : "") +
                   (relInk * 100).toFixed(0) + "% relative)",
-        evidence: "Cap height and stroke both match, so this is not a size or " +
-                  "weight difference. Either the text differs, the tracking " +
-                  "differs, or the typeface does. This cannot tell which: " +
-                  "distinguishing one sans face from another reliably needs the " +
-                  "font name, not the pixels.",
+        evidence: "Cap height and stroke both match, so the size and weight are " +
+                  "right. The glyphs still cover a different share of their box, " +
+                  "which usually means different text rather than anything wrong " +
+                  "with how the type is set.",
         bbox: labelBox, point: true
       });
     }
@@ -1372,7 +1428,20 @@ async function run(data) {
     });
   }
 
+  // Group findings by kind. Eight arrows converging on one small button is
+  // unreadable however neatly they are fanned, and a reviewer thinks in
+  // categories anyway: spacing is one conversation, color is another.
+  function groupOf(f) {
+    const id = f.id || "";
+    if (/padding|spacing|phantom|width_mismatch/.test(id)) return "spacing";
+    if (/radius/.test(id)) return "shape";
+    if (/font_|label_type|label_rendering|content_size|content_offset/.test(id)) return "type";
+    if (/color|colour|fill/.test(id)) return "color";
+    return "other";
+  }
+
   const all = tokenFindings.concat(pixel);
+  all.forEach(f => { f.group = groupOf(f); });
 
   // Pixel perfect check: how many pixels differ at all, and by how much at worst.
   // The threshold slider governs what counts as a finding; this reports the raw
@@ -1409,6 +1478,24 @@ async function run(data) {
   });
   log(parts.join(""));
 
+  // populate the group picker from what was actually found
+  (function () {
+    const counts = {};
+    all.forEach(f => { if (f.bbox) counts[f.group] = (counts[f.group] || 0) + 1; });
+    const keys = Object.keys(counts);
+    const sel = $("groupSel");
+    sel.innerHTML = "";
+    const add = (v, t) => { const o = document.createElement("option");
+                            o.value = v; o.textContent = t; sel.appendChild(o); };
+    const drawable = all.filter(f => f.bbox).length;
+    add("all", "All findings on one board (" + drawable + ")");
+    if (keys.length > 1) add("split", "Separate board per group (" + keys.length + ")");
+    keys.forEach(k => add(k, k.charAt(0).toUpperCase() + k.slice(1) + " only (" + counts[k] + ")"));
+    // default to splitting once it would otherwise be crowded
+    sel.value = (drawable >= 5 && keys.length > 1) ? "split" : "all";
+    $("groupRow").style.display = drawable ? "block" : "none";
+  })();
+
   lastPayload = {
     findings: all,
     shotNodeId: data.shotNodeId,
@@ -1428,6 +1515,17 @@ async function run(data) {
 function chosenDevice() {
   const v = $("dev").value;
   if (v === "auto") return null;
+  if (v === "responsive") {
+    // On the web the logical width is the breakpoint and the height is whatever
+    // the capture happens to be, since a page scrolls. So only the width is
+    // asserted, and the height is derived from it.
+    const w = $("bp").value === "custom"
+      ? (parseInt($("bpCustom").value, 10) || 768)
+      : parseInt($("bp").value, 10);
+    const dpr = parseFloat($("bpScale").value) || 1;
+    return { responsive: true, lw: w, dpr: dpr,
+             name: w + "px @" + dpr + "x" };
+  }
   if (v === "custom") return { custom: true, dpr: parseFloat($("dpr").value) || 3 };
   const p = v.split("x").map(Number);
   return { lw: p[0], lh: p[1], dpr: p[2], name: $("dev").selectedOptions[0].text.split("\u00b7")[0].trim() };
@@ -1442,7 +1540,13 @@ $("font").oninput = () => {
 };
 
 $("dev").onchange = () => {
-  $("dprRow").style.display = $("dev").value === "custom" ? "flex" : "none";
+  const v = $("dev").value;
+  $("dprRow").style.display = v === "custom" ? "flex" : "none";
+  $("bpRow").style.display  = v === "responsive" ? "flex" : "none";
+};
+
+$("bp").onchange = () => {
+  $("bpCustom").style.display = $("bp").value === "custom" ? "inline-block" : "none";
 };
 
 $("resize").onclick = () => {
@@ -1453,7 +1557,12 @@ $("run").onclick = () => {
   log('<div class="note">reading selection\u2026</div>');
   parent.postMessage({ pluginMessage: { type: "collect", device: chosenDevice() } }, "*");
 };
+$("renum").onclick = () => {
+  parent.postMessage({ pluginMessage: { type: "renumber" } }, "*");
+};
+
 $("draw").onclick = () => {
+  lastPayload.mode = $("groupSel").value || "all";
   parent.postMessage({ pluginMessage: { type: "annotate", payload: lastPayload } }, "*");
 };
 

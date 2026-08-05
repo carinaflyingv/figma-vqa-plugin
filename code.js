@@ -289,6 +289,21 @@ function classifySelection() {
 }
 
 function resolveDevice(size, chosen) {
+  if (chosen && chosen.responsive) {
+    // A web page has no canonical height, so derive it from the capture's own
+    // aspect at the stated width rather than asserting one.
+    const lw = chosen.lw;
+    const dpr = chosen.dpr;
+    const lh = Math.round(size.height / dpr);
+    const impliedDpr = size.width / lw;
+    return { name: chosen.name, lw: lw, lh: lh, dpr: dpr,
+             responsive: true,
+             mismatch: Math.abs(impliedDpr - dpr) > 0.06
+               ? "The capture is " + size.width + " px wide. At " + dpr + "x that " +
+                 "is " + (size.width / dpr).toFixed(0) + " logical px, not " + lw +
+                 ". Either the breakpoint or the scale is wrong."
+               : null };
+  }
   if (chosen && chosen.custom) {
     return { name: "custom @" + chosen.dpr + "x", dpr: chosen.dpr,
              lw: Math.round(size.width / chosen.dpr),
@@ -368,7 +383,54 @@ async function annotate(payload) {
   const shot = await figma.getNodeByIdAsync(payload.shotNodeId);
   if (!shot) return "screenshot node is gone";
 
-  figma.currentPage.findChildren(n => n.name === "VQA markers").forEach(n => n.remove());
+  const mode = payload.mode || "all";
+  const drawable = payload.findings.filter(f => f.bbox);
+
+  // One board per group. Each gets its own copy of the capture so the arrows have
+  // room, rather than every finding pointing into the same small component.
+  if (mode === "split") {
+    const groups = [];
+    drawable.forEach(f => { if (groups.indexOf(f.group) < 0) groups.push(f.group); });
+    let x = shot.x, made = 0;
+    for (let g = 0; g < groups.length; g++) {
+      const name = groups[g];
+      const subset = payload.findings.filter(f => f.group === name);
+      const copy = shot.clone();
+      copy.x = x + (g === 0 ? 0 : 0);
+      copy.y = shot.y;
+      if (g > 0) copy.x = x;
+      copy.name = name + " \u00b7 " + shot.name;
+      figma.currentPage.appendChild(copy);
+
+      const heading = figma.createText();
+      heading.fontName = { family: "Inter", style: "Semi Bold" };
+      heading.characters = name.charAt(0).toUpperCase() + name.slice(1) +
+                           "  (" + subset.filter(f => f.bbox).length + ")";
+      heading.fontSize = 16;
+      heading.fills = [{ type: "SOLID", color: INK }];
+      heading.x = copy.x; heading.y = copy.y - 30;
+      figma.currentPage.appendChild(heading);
+
+      await drawOne(copy, Object.assign({}, payload, {
+        findings: subset,
+        title: payload.title + "  \u00b7  " + name
+      }), name);
+      made++;
+      x = copy.x + copy.width + 560;
+    }
+    figma.viewport.scrollAndZoomIntoView(figma.currentPage.children.slice(-6));
+    return "drew " + made + " boards, one per group";
+  }
+
+  const subset = mode === "all" ? payload.findings
+                                : payload.findings.filter(f => f.group === mode);
+  return await drawOne(shot, Object.assign({}, payload, { findings: subset }), mode);
+}
+
+async function drawOne(shot, payload, tag) {
+
+  const markerName = "VQA markers" + (tag && tag !== "all" ? " \u00b7 " + tag : "");
+  figma.currentPage.findChildren(n => n.name === markerName).forEach(n => n.remove());
 
   // resize from device pixels to logical points, once
   const d = payload.device;
@@ -541,7 +603,7 @@ async function annotate(payload) {
   let group = null;
   if (marks.length) {
     group = figma.group(marks, figma.currentPage);
-    group.name = "VQA markers";
+    group.name = markerName;
   }
 
   const panel = figma.createFrame();
@@ -589,7 +651,64 @@ async function annotate(payload) {
   const picks = group ? [shot, group, panel] : [shot, panel];
   figma.currentPage.selection = picks;
   figma.viewport.scrollAndZoomIntoView(picks);
-  return "annotated " + F.length + " findings";
+  return "annotated " + F.filter(f => f.bbox).length + " findings";
+}
+
+// Renumber a board after cards have been deleted.
+//
+// A plugin cannot watch the document for deletions, so this is a command rather
+// than something automatic. It reads whichever finding cards are still present,
+// renumbers them from 1, and renumbers the badges to match by pairing them on the
+// finding id stored in each layer name.
+async function renumber() {
+  await figma.loadFontAsync({ family: "Inter", style: "Semi Bold" });
+
+  const panels = figma.currentPage.findChildren(n =>
+    n.type === "FRAME" && n.name.indexOf("VQA Findings") === 0);
+  if (!panels.length) return "No VQA findings panel on this page.";
+
+  let renamed = 0, orphaned = 0;
+  for (const panel of panels) {
+    const cards = panel.children.filter(c => c.name.indexOf("finding ") === 0);
+    // ids survive on the marker layers, so pair by position in the panel
+    const kept = [];
+    for (let i = 0; i < cards.length; i++) {
+      const card = cards[i];
+      const head = card.findChild(n => n.type === "TEXT");
+      if (!head) continue;
+      const oldNum = parseInt(head.characters, 10);
+      const rest = head.characters.replace(/^\s*\d+\.\s*/, "");
+      head.characters = (i + 1) + ".  " + rest;
+      card.name = "finding " + (i + 1);
+      kept.push({ from: oldNum, to: i + 1 });
+      renamed++;
+    }
+
+    // matching marker group sits next to this panel
+    const tag = panel.name.indexOf("\u00b7") > 0
+      ? panel.name.slice(panel.name.lastIndexOf("\u00b7") + 1).trim() : null;
+    const groups = figma.currentPage.findChildren(n =>
+      n.type === "GROUP" && n.name.indexOf("VQA markers") === 0);
+    for (const g of groups) {
+      const map = {};
+      kept.forEach(k => { map[k.from] = k.to; });
+      // badge numbers are TEXT nodes whose whole content is a number
+      const nums = g.findAll(n => n.type === "TEXT" && /^\d+$/.test(n.characters));
+      for (const t of nums) {
+        const was = parseInt(t.characters, 10);
+        if (map[was]) t.characters = String(map[was]);
+        else { t.opacity = 0.35; orphaned++; }
+      }
+      // and the layer names carry the number too
+      g.findAll(n => /^(marker|badge|leader|arrow) \d+/.test(n.name)).forEach(n => {
+        const m = n.name.match(/^(\w+) (\d+)(.*)$/);
+        if (m && map[+m[2]]) n.name = m[1] + " " + map[+m[2]] + m[3];
+      });
+    }
+  }
+
+  return "renumbered " + renamed + " findings" +
+         (orphaned ? ", dimmed " + orphaned + " markers with no card left" : "");
 }
 
 // ---------------------------------------------------------------- messaging
@@ -614,6 +733,10 @@ figma.ui.onmessage = async (msg) => {
     } else if (msg.type === "collect") {
       const data = await collect(msg.device);
       figma.ui.postMessage(Object.assign({ type: "collected" }, data));
+    } else if (msg.type === "renumber") {
+      const note = await renumber();
+      figma.ui.postMessage({ type: "annotated", note: note });
+      figma.notify(note);
     } else if (msg.type === "annotate") {
       const note = await annotate(msg.payload);
       figma.ui.postMessage({ type: "annotated", note: note });
