@@ -206,7 +206,15 @@ numbers.</div>
   </label>
 </div>
 <button id="draw" class="ghost" style="display:none">Annotate in Figma</button>
-<button id="renum" class="ghost">Renumber after deleting cards</button>
+<button id="renum" class="ghost">Renumber &amp; clean up deleted cards
+  <span class="info" tabindex="0" style="border-color:transparent">i<span class="tip">
+  Delete the finding cards you do not want, then run this.<br><br>
+  The remaining cards renumber from 1, and every marker, arrow and dimension
+  belonging to a deleted card is <b>removed from the canvas</b>.<br><br>
+  A plugin cannot watch the document for deletions, so this has to be a button
+  rather than something automatic.
+  </span></span>
+</button>
 <div id="log"></div>
 
 

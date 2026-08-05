@@ -7,7 +7,7 @@
 //
 // Nothing leaves Figma. No network, no files, no external service.
 
-figma.showUI(__html__, { width: 460, height: 640, themeColors: true });
+figma.showUI(__html__, { width: 460, height: 760, themeColors: true });
 
 // pixel dims -> [name, logicalW, logicalH, dpr]
 const DEVICES = [
@@ -557,7 +557,7 @@ async function drawOne(shot, payload, tag) {
       if (len < 2) return;
 
       const span = figma.createLine();
-      span.name = "dim " + m.label;
+      span.name = "dim " + (i + 1) + " " + m.label;
       span.x = x0; span.y = y0;
       span.resize(len, 0);
       span.rotation = -Math.atan2(y1 - y0, x1 - x0) * 180 / Math.PI;
@@ -568,7 +568,7 @@ async function drawOne(shot, payload, tag) {
       // end ticks, perpendicular to the span
       [[x0, y0], [x1, y1]].forEach(function (p) {
         const t = figma.createLine();
-        t.name = "tick";
+        t.name = "tick " + (i + 1);
         if (horizontal) { t.x = p[0]; t.y = p[1] - 5; t.resize(10, 0); t.rotation = -90; }
         else            { t.x = p[0] - 5; t.y = p[1]; t.resize(10, 0); }
         t.strokes = [{ type: "SOLID", color: MAGENTA }];
@@ -577,6 +577,7 @@ async function drawOne(shot, payload, tag) {
       });
 
       const lbl = figma.createText();
+      lbl.name = "measure " + (i + 1);
       lbl.fontName = { family: "Inter", style: "Semi Bold" };
       lbl.characters = m.label;
       lbl.fontSize = 10;
@@ -588,6 +589,7 @@ async function drawOne(shot, payload, tag) {
 
       if (m.spec) {
         const was = figma.createText();
+        was.name = "was " + (i + 1);
         was.fontName = { family: "Inter", style: "Regular" };
         was.characters = m.spec;
         was.fontSize = 9;
@@ -654,61 +656,91 @@ async function drawOne(shot, payload, tag) {
   return "annotated " + F.filter(f => f.bbox).length + " findings";
 }
 
-// Renumber a board after cards have been deleted.
+// Renumber a board after cards have been deleted, and take the orphaned
+// annotations with them.
 //
 // A plugin cannot watch the document for deletions, so this is a command rather
-// than something automatic. It reads whichever finding cards are still present,
-// renumbers them from 1, and renumbers the badges to match by pairing them on the
-// finding id stored in each layer name.
+// than something automatic. Delete the cards you do not want, run this, and the
+// remaining cards renumber from 1 while every marker, badge, leader, arrow and
+// dimension belonging to a deleted card is removed.
+//
+// Pairing works because every annotation node is named with its finding number:
+// "marker 3", "badge 3", "num 3", "leader 3", "arrow 3", "dim 3", "tick 3",
+// "measure 3", "was 3". Reading the number out of the layer name is what lets a
+// deletion in one place take effect in the other.
+const MARK_KINDS = ["marker", "badge", "num", "leader", "arrow",
+                    "dim", "tick", "measure", "was"];
+
+function markNumber(name) {
+  const m = String(name).match(/^([a-z]+) (\d+)\b/);
+  return m && MARK_KINDS.indexOf(m[1]) >= 0 ? { kind: m[1], n: +m[2] } : null;
+}
+
 async function renumber() {
   await figma.loadFontAsync({ family: "Inter", style: "Semi Bold" });
 
   const panels = figma.currentPage.findChildren(n =>
     n.type === "FRAME" && n.name.indexOf("VQA Findings") === 0);
-  if (!panels.length) return "No VQA findings panel on this page.";
+  if (!panels.length) {
+    return "No VQA findings panel on this page. Annotate first, then delete the " +
+           "cards you do not want, then run this.";
+  }
 
-  let renamed = 0, orphaned = 0;
+  let renumbered = 0, deleted = 0, boards = 0;
+
   for (const panel of panels) {
     const cards = panel.children.filter(c => c.name.indexOf("finding ") === 0);
-    // ids survive on the marker layers, so pair by position in the panel
-    const kept = [];
-    for (let i = 0; i < cards.length; i++) {
-      const card = cards[i];
-      const head = card.findChild(n => n.type === "TEXT");
-      if (!head) continue;
-      const oldNum = parseInt(head.characters, 10);
-      const rest = head.characters.replace(/^\s*\d+\.\s*/, "");
-      head.characters = (i + 1) + ".  " + rest;
-      card.name = "finding " + (i + 1);
-      kept.push({ from: oldNum, to: i + 1 });
-      renamed++;
-    }
+    if (!cards.length) continue;
+    boards++;
 
-    // matching marker group sits next to this panel
-    const tag = panel.name.indexOf("\u00b7") > 0
-      ? panel.name.slice(panel.name.lastIndexOf("\u00b7") + 1).trim() : null;
+    // read the number off each surviving card, then assign new ones in order
+    const map = {};
+    cards.forEach((card, i) => {
+      const head = card.findChild(n => n.type === "TEXT");
+      if (!head) return;
+      const was = parseInt(head.characters, 10);
+      const now = i + 1;
+      if (was) map[was] = now;
+      head.characters = now + ".  " + head.characters.replace(/^\s*\d+\.\s*/, "");
+      card.name = "finding " + now;
+      renumbered++;
+    });
+
+    // marker groups sit beside the panel; a split board has one per group
     const groups = figma.currentPage.findChildren(n =>
       n.type === "GROUP" && n.name.indexOf("VQA markers") === 0);
+
     for (const g of groups) {
-      const map = {};
-      kept.forEach(k => { map[k.from] = k.to; });
-      // badge numbers are TEXT nodes whose whole content is a number
-      const nums = g.findAll(n => n.type === "TEXT" && /^\d+$/.test(n.characters));
-      for (const t of nums) {
-        const was = parseInt(t.characters, 10);
-        if (map[was]) t.characters = String(map[was]);
-        else { t.opacity = 0.35; orphaned++; }
+      const nodes = g.findAll(() => true);
+
+      // delete first, so renaming never collides with a number still in use
+      for (const n of nodes) {
+        const mk = markNumber(n.name);
+        if (mk && !map[mk.n]) { n.remove(); deleted++; }
       }
-      // and the layer names carry the number too
-      g.findAll(n => /^(marker|badge|leader|arrow) \d+/.test(n.name)).forEach(n => {
-        const m = n.name.match(/^(\w+) (\d+)(.*)$/);
-        if (m && map[+m[2]]) n.name = m[1] + " " + map[+m[2]] + m[3];
-      });
+
+      // two passes for the rename, via a parked name, because renaming 3 to 2
+      // while a 2 still exists would make the second pass ambiguous
+      const live = g.findAll(n => markNumber(n.name));
+      for (const n of live) {
+        const mk = markNumber(n.name);
+        n.name = n.name.replace(/^([a-z]+) (\d+)/, "$1 §" + map[mk.n]);
+        if (mk.kind === "num" && n.type === "TEXT") n.characters = String(map[mk.n]);
+      }
+      for (const n of g.findAll(n => n.name.indexOf("§") > 0)) {
+        n.name = n.name.replace("§", "");
+      }
+
+      if (!g.children.length) g.remove();
     }
   }
 
-  return "renumbered " + renamed + " findings" +
-         (orphaned ? ", dimmed " + orphaned + " markers with no card left" : "");
+  if (!renumbered) return "No finding cards left to renumber.";
+  return "renumbered " + renumbered + " finding" + (renumbered === 1 ? "" : "s") +
+         (boards > 1 ? " across " + boards + " boards" : "") +
+         (deleted ? ", removed " + deleted + " annotation node" +
+                    (deleted === 1 ? "" : "s") + " belonging to deleted cards"
+                  : ", nothing to remove");
 }
 
 // ---------------------------------------------------------------- messaging
