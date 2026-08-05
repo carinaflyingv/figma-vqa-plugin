@@ -802,18 +802,42 @@ async function run(data) {
              ' pt, capture ' + sw.toFixed(1) + ' x ' + sh.toFixed(1) + ' pt</div>');
 
   // -- identity gate ---------------------------------------------------------
-  // Height is disqualifying, width is diagnostic. No padding or radius defect
-  // changes height, so a height mismatch means a different component. Width
-  // moving alone with height steady is the padding signature.
-  if (Math.abs(sh - ch) > 2) {
-    log(parts.join("") + '<div class="bad">ABORT: capture height differs by ' +
-        Math.abs(sh-ch).toFixed(1) + ' pt. Padding and radius defects do not change ' +
-        'height. This is a different component, size, or state.</div>');
-    return;
-  }
-  if (Math.abs(sw - cw) > 2) {
-    parts.push('<div class="note">width differs by ' + Math.abs(sw-cw).toFixed(1) +
-               ' pt with height unchanged, which is the padding signature. Continuing.</div>');
+  // On native, height is disqualifying: a button's height is fixed per size
+  // variant, so a different height means a different component.
+  //
+  // On the web it is not. A calendar is taller in a month with six week rows than
+  // one with five. A card grows with its content. A component in a fluid container
+  // is whatever width the container gives it. Aborting on size there would refuse
+  // to compare almost anything, so instead the difference is reported as a finding
+  // and the comparison continues on the region the two have in common.
+  const isResponsive = !!(data.device && data.device.responsive);
+  const dW = sw - cw, dH = sh - ch;
+  let sizeDiff = false;
+
+  if (isResponsive) {
+    if (Math.abs(dW) > 2 || Math.abs(dH) > 2) {
+      sizeDiff = true;
+      parts.push('<div class="note">The component renders ' +
+        (Math.abs(dW) > 2 ? Math.abs(dW).toFixed(0) + ' pt ' + (dW > 0 ? "wider" : "narrower") : "") +
+        (Math.abs(dW) > 2 && Math.abs(dH) > 2 ? " and " : "") +
+        (Math.abs(dH) > 2 ? Math.abs(dH).toFixed(0) + ' pt ' + (dH > 0 ? "taller" : "shorter") : "") +
+        ' than the design. On the web that is often legitimate: content length, row ' +
+        'count and container width all move size. Comparing the region the two ' +
+        'have in common, aligned to the top.</div>');
+    }
+  } else {
+    if (Math.abs(dH) > 2) {
+      log(parts.join("") + '<div class="bad">ABORT: capture height differs by ' +
+          Math.abs(dH).toFixed(1) + ' pt. On a native component, padding and radius ' +
+          'defects do not change height, so this is a different component, size, or ' +
+          'state. If this is a web component, choose Responsive web in the device ' +
+          'menu and it will compare the overlap instead.</div>');
+      return;
+    }
+    if (Math.abs(dW) > 2) {
+      parts.push('<div class="note">width differs by ' + Math.abs(dW).toFixed(1) +
+                 ' pt with height unchanged, which is the padding signature. Continuing.</div>');
+    }
   }
 
   // -- pad the canonical, then align it onto the element in the capture -------
@@ -833,11 +857,18 @@ async function run(data) {
   // its container, so symmetric padding growth pushes both edges outward. Aligning
   // by the left edge collapses that into a right edge change only, and the
   // two-strips-at-both-edges signature never appears.
+  //
+  // The exception is a responsive component whose height differs. Those grow
+  // downward from a fixed header, so centering puts the header rows out of line
+  // with each other and every row below reads as moved. Align the tops instead.
+  const growsDown = isResponsive && Math.abs(dH) > 2;
   const shotCx = (inShot[0] + inShot[2]) / 2, shotCy = (inShot[1] + inShot[3]) / 2;
   const canCx = M + (inCanon[0] + inCanon[2]) / 2;
   const canCy = M + (inCanon[1] + inCanon[3]) / 2;
   const ox = Math.round(shotCx - canCx);
-  const oy = Math.round(shotCy - canCy);
+  const oy = growsDown
+    ? Math.round(inShot[1] - (M + inCanon[1]))
+    : Math.round(shotCy - canCy);
   const w = Math.min(CAN.width, A.width - Math.max(0, ox));
   const h = Math.min(CAN.height, A.height - Math.max(0, oy));
   if (ox < 0 || oy < 0 || w < 8 || h < 8) {
@@ -1360,6 +1391,25 @@ async function run(data) {
           point: true
         });
       }
+    });
+  }
+
+  if (sizeDiff) {
+    pixel.push({
+      id: "element_size", property: "rendered size", layer: "pixel",
+      severity: Math.abs(dW) > cw * 0.15 || Math.abs(dH) > ch * 0.25 ? "major" : "minor",
+      spec: cw.toFixed(0) + " x " + ch.toFixed(0) + " pt in the design",
+      observed: sw.toFixed(0) + " x " + sh.toFixed(0) + " pt as rendered  (" +
+                (dW >= 0 ? "+" : "") + dW.toFixed(0) + " wide, " +
+                (dH >= 0 ? "+" : "") + dH.toFixed(0) + " tall)",
+      evidence: "Worth checking rather than assuming wrong. A width difference " +
+                "usually means the container, not the component: a fluid element " +
+                "takes whatever width it is given, and a design frame often has " +
+                "margins the isolated render does not. A height difference usually " +
+                "means content: more rows, longer text, an extra state. Compare " +
+                "against the design frame for this breakpoint before treating it " +
+                "as a defect.",
+      bbox: null
     });
   }
 
