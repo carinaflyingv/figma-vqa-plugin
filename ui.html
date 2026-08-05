@@ -1649,9 +1649,29 @@ $("draw").onclick = () => {
   parent.postMessage({ pluginMessage: { type: "annotate", payload: lastPayload } }, "*");
 };
 
+const UI_VERSION = "v41";
+
 onmessage = async (e) => {
   const m = e.data.pluginMessage;
   if (!m) return;
+
+  // code.js and ui.html are separate files and can drift apart, most often when
+  // only one of the two gets replaced. The symptom is baffling: the UI offers a
+  // setting the main thread does not understand, so the setting appears to do
+  // nothing. Catch it here rather than letting the user infer it from behaviour.
+  if (m.type === "version") {
+    const badge = document.querySelector("h1 span");
+    if (m.version !== UI_VERSION) {
+      if (badge) { badge.textContent = UI_VERSION + " ui / " + m.version + " code";
+                   badge.style.color = "var(--flag)"; }
+      log('<div class="bad"><b>Mismatched files.</b> ui.html is ' + UI_VERSION +
+          ' and code.js is ' + m.version + '. They are separate files and both have ' +
+          'to come from the same version, or settings the panel offers will not be ' +
+          'understood by the plugin. Replace both, then remove and re-import the ' +
+          'plugin.</div>');
+    }
+    return;
+  }
   if (m.type === "selection") {
     $("slotShot").className = "slot" + (m.shot ? "" : " empty");
     $("slotShot").innerHTML = m.shot ? "screenshot: <b>" + m.shot + "</b>" : "no screenshot selected";
@@ -1661,6 +1681,15 @@ onmessage = async (e) => {
   }
   if (m.type === "collected") {
     if (m.error) { log('<div class="bad">' + m.error + '</div>'); return; }
+    // A responsive request that comes back without the flag means code.js did not
+    // understand it, which means the two files are from different versions.
+    if (m.device && $("dev").value === "responsive" && !m.device.responsive) {
+      log('<div class="bad"><b>code.js does not understand Responsive web.</b> ' +
+          'The panel sent a breakpoint range and got back a device object without ' +
+          'the responsive flag, so code.js is from an older version than ui.html. ' +
+          'Replace <b>both</b> files, then remove and re-import the plugin.</div>');
+      return;
+    }
     try { await run(m); }
     catch (err) { log('<div class="bad">' + err.message + '</div>'); }
   }
